@@ -8,9 +8,10 @@ AIBoot은 경영지원 담당자 **1명**이 Google Workspace를 중심으로 �
 
 1. **[docs/DECISIONS.md](docs/DECISIONS.md)** — 확정된 운영 원칙·업무·보고 정책. 이미 답한 질문을 재질문하지 말 것.
 2. **[docs/FIXED-EXPENSES.md](docs/FIXED-EXPENSES.md)** — 첫 실증 업무: 23개 고정비, 시트 구조, Gmail 첨부파일 검증.
-3. **[docs/VERIFICATION.md](docs/VERIFICATION.md)** — 성공·실패·미검증 구분과 증거 수준.
-4. **[docs/NEXT-STEPS.md](docs/NEXT-STEPS.md)** — 실행 순서 및 보류 사항.
-5. **[docs/CONTEXT.md](docs/CONTEXT.md)** — 협업 방식과 대화 전환용 핵심 맥락.
+3. **[docs/BILLING-CYCLES.md](docs/BILLING-CYCLES.md)** — 23개 업체별 사용기간·청구회차·납부일, 충돌 항목 및 사용자 검토 요청 (최신 검토 초안).
+4. **[docs/VERIFICATION.md](docs/VERIFICATION.md)** — 성공·실패·미검증 구분과 증거 수준.
+5. **[docs/NEXT-STEPS.md](docs/NEXT-STEPS.md)** — 실행 순서 및 보류 사항.
+6. **[docs/CONTEXT.md](docs/CONTEXT.md)** — 협업 방식과 대화 전환용 핵심 맥락.
 
 ## 현재까지 확인한 내용
 
@@ -41,3 +42,7 @@ AIBoot은 경영지원 담당자 **1명**이 Google Workspace를 중심으로 �
 후속 실험 결과를 사용자가 전달함: **고정비 23개 항목 중 현 조건에서 자동화 가능 3건 / 자동화가 어려운 항목 20건**. 세부 3건의 업체 및 검증 기준은 아직 전달받지 않았으므로 지정하지 않음. 초기 5건 표본 결과와 별개의 후속 평가임.
 
 따라서 **23건 완전 자동처리 목표를 내려놓고, 사람과 AI가 분업하는 'AI비서'로 역할 전환**한다. 사용자는 인증·사이트 접근·청구서 확보·직접 판단 등을 수행하고, AI는 오전/오후 전체 업무 현황 정리, 해야 할 일/요청 사항 전달, 제공된 자료의 금액·대상월 확인, 승인된 범위에서 입력 보조 및 결과 보고를 담당한다. 20건은 '업무 관리 제외'가 아니라 '무인 자동처리 불가/사람 개입 필요'다.
+
+## 2026-10-30 최신 검토 요청
+
+첨부 관리비 파일의 **시트내용** 규칙표를 기준으로 23개 항목의 사용기간·납부월 산식을 [BILLING-CYCLES.md](docs/BILLING-CYCLES.md)에 추출함. **베네피아(15일 vs 익월 20일), 수유 수도요금(20일 vs 익월 말일/격월), 월말의 30일 표기, 양주 수도요금 변동 주기** 등 충돌을 확인했으며 사용자 검토 전 자동 보고에 확정 적용하지 않음. 첨부 원본 파일은 GitHub에 업로드하지 않음.
