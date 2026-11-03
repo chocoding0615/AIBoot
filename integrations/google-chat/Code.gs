@@ -106,10 +106,15 @@ function appendClose_(type, parts, actor) {
   } finally { lk.releaseLock(); }
   return vendor+' / '+period+' : '+(isDone?'완료':'업체 대기')+' 기록했습니다.\n기존 회차가 아니라 정확히 이 사용회차에만 적용합니다.';
 }
+function periodContainsMonth_(period, month) {
+  // A single 3–4 month bulk invoice must remain discoverable for every included usage month.
+  const parts = String(period).split('~');
+  return month >= parts[0] && month <= (parts[1] || parts[0]);
+}
 function statusMessage_(month) {
   if (!/^20\d{2}-(0[1-9]|1[0-2])$/.test(month)) return '조회 월을 YYYY-MM로 입력하세요.';
   const entries=latest_();
-  const selected=[...entries.entries()].filter(([key])=>key.split('|')[1].includes(month));
+  const selected=[...entries.entries()].filter(([key])=>periodContainsMonth_(key.split('|')[1],month));
   const done=selected.filter(([,v])=>v.status==='완료');
   const waiting=selected.filter(([,v])=>v.status==='업체 대기');
   return [
