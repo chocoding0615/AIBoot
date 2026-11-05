@@ -4,7 +4,7 @@
 
 ## 동작
 1. `JP매월 지출`(기준)과 `AIBoot_데일리마감`(변경 이력)을 **읽기 전용**(spreadsheets.get)으로 스냅샷. 연노랑(#fff2cc)은 `(연노랑)` 표시 = 지출결의 제출, 납부 완료 아님. `고정비 대시보드`(폐기 예정)와 `시트내용`(계정정보 포함)은 읽지 않는다.
-   - 지정 Google Chat 스페이스 2개(`chatSpaces`)의 **직전 근무일 00:00(KST) 또는 마지막 정기 보고 발송일 중 더 이른 날 이후** 메시지(주말·공휴일·`vacations` 휴가는 건너뛰어 누적, 최대 45일·스페이스당 2,000건, 넘치면 `일부 조회/자료 누락`)를 **읽기 전용 별도 토큰**(`chat.messages.readonly`, `chat.spaces.readonly`)으로 함께 읽는다. 이 스페이스로는 아무것도 보내지 않는다. 읽기 실패 시 `조회 실패`로 표시하고 내용을 쓰지 않는다.
+   - 지정 Google Chat 스페이스 2개(`chatSpaces`)의 **마지막 정기 보고가 Chat을 읽은 시각 이후 새 메시지만**(각 메시지 1회 보고. 기록이 없으면 직전 근무일 00:00(KST) 또는 마지막 정기 보고 발송일 중 더 이른 날부터)(주말·공휴일·`vacations` 휴가는 건너뛰어 누적, 최대 45일·스페이스당 2,000건, 넘치면 `일부 조회/자료 누락`)를 **읽기 전용 별도 토큰**(`chat.messages.readonly`, `chat.spaces.readonly`)으로 함께 읽는다. 이 스페이스로는 아무것도 보내지 않는다. 읽기 실패 시 `조회 실패`로 표시하고 내용을 쓰지 않는다.
 2. 근무일 정보(오늘·다음 근무일·35일 내 공휴일·휴가)와 같은 스냅샷으로 두 CLI를 **각자 빈 임시 폴더에서 별도 프로세스**로 실행. 서로의 출력은 프롬프트에 들어가지 않는다.
    - Codex: `codex exec --sandbox read-only --ephemeral` (ChatGPT 구독)
    - Antigravity: `agy -p … --mode plan` (Google 계정 한도, 한도 소진 시 재시도 안 함)
@@ -34,7 +34,7 @@
 ```
 node runner.mjs --slot morning|afternoon [--agent codex|antigravity|both] [--test [--tag latest|space|cards|layout] [--from-report <저장본 접미사>]] [--dry-run] [--facts-only]   # --facts-only: AI 호출·발송 없이 계산된 사실만 출력
 node runner.mjs --auth-chat --account <회사계정>   # Chat 읽기 전용 권한 1회 승인
-node runner.mjs --check-chat [--as-of YYYY-MM-DD] [--vacation 날짜,날짜]   # 지정 스페이스 읽기 확인(발송 없음, 건수만 출력)
+node runner.mjs --check-chat [--as-of YYYY-MM-DD] [--vacation 날짜,날짜] [--no-ledger]   # 지정 스페이스 읽기 확인(발송 없음, 건수만 출력)
 powershell -File register-tasks.ps1          # 작업 스케줄러 등록 (AIBoot-DualReport-morning/afternoon)
 Unregister-ScheduledTask -TaskName 'AIBoot-DualReport-*' -Confirm:$false   # 중지
 ```
