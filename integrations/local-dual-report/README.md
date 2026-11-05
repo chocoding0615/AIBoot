@@ -11,7 +11,7 @@
 3. 각 AI는 `=== CHAT ===`(짧은 보고)과 `=== INTERNAL ===`(근거·예외)을 출력한다. 공통인 것은 구성뿐이고 표현·우선순위는 각 AI가 정한다.
    - 형식은 [CURRENT.md](../../CURRENT.md): `내용 요약 및 추천`(N. 제목 / ■ 내용 / □ 추천, 1~3건) → `오늘 완료` → `오늘 남은 일`(고정비·계약서·라이센스·복지 항상 표시, 고정비는 7일 이내 임박분만) → 다음 근무일 업무.
    - 코드 검증(대분류·실선·분야·날짜·D-구간·금지 표현) 실패나 2,000자 초과 시 **발송하지 않고 실패**로 기록한다(긴 분석 원문을 그대로 보내지 않음).
-4. CHAT 부분만 웹훅으로 발송하고 메시지 ID를 기록한다. 전체 원문은 `%USERPROFILE%\.aiboot\reports\`(이 PC에만)에 저장한다.
+4. CHAT 부분을 **Cards V2 카드 4개**(내용 요약 및 추천 / 오늘 완료 / 오늘 남은 일 / 다음 업무)로 변환해 웹훅으로 발송하고 메시지 ID를 기록한다. 변환은 표시만 바꾼다: 카드에서 다시 뽑은 텍스트가 검증된 원문의 모든 줄을 같은 순서로 포함하지 않으면 발송하지 않는다. 웹훅이 카드를 거부(HTTP 400)하면 같은 내용을 텍스트로 보낸다. 전체 원문은 `%USERPROFILE%\.aiboot\reports\`(이 PC에만)에 저장한다.
 
 ## 중복 방지
 `%USERPROFILE%\.aiboot\ledger.json` 키 `날짜|시간대|agent`. 파일 잠금으로 동시 실행을 막는다.
@@ -32,7 +32,7 @@
 
 ## 명령
 ```
-node runner.mjs --slot morning|afternoon [--agent codex|antigravity|both] [--test [--tag latest|space]] [--dry-run]
+node runner.mjs --slot morning|afternoon [--agent codex|antigravity|both] [--test [--tag latest|space|cards] [--from-report <저장본 접미사>]] [--dry-run]
 node runner.mjs --auth-chat --account <회사계정>   # Chat 읽기 전용 권한 1회 승인
 node runner.mjs --check-chat                     # 지정 스페이스 읽기 확인(발송 없음)
 powershell -File register-tasks.ps1          # 작업 스케줄러 등록 (AIBoot-DualReport-morning/afternoon)
