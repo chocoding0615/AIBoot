@@ -576,7 +576,11 @@ function validate(chat, f) {
   for (const l of lines) {
     const days = [...l.matchAll(/(?:\d{1,2}\/)?(\d{1,2})일/g), ...l.matchAll(/\d{1,2}\/(\d{1,2})(?!일)/g)].map(m => Number(m[1]));
     if (!days.length) continue;
-    for (const s of f.sched) if (s.day && norm(l).includes(norm(s.vendor)) && !days.includes(s.day)) errs.push(`날짜 오류: ${s.vendor} 규칙상 ${s.day}일 ≠ "${l.trim()}"`);
+    for (const s of f.sched) {
+      // A dated task-register item naming the same vendor (e.g. 생각공장 주차권 구매) has its own date.
+      const own = (f.recurring || []).filter(r => norm(r).includes(norm(s.vendor))).map(r => Number((/\d{4}-\d{2}-(\d{2})/.exec(r) || [])[1])).filter(Boolean);
+      if (s.day && norm(l).includes(norm(s.vendor)) && !days.includes(s.day) && !days.some(d => own.includes(d))) errs.push(`날짜 오류: ${s.vendor} 규칙상 ${s.day}일 ≠ "${l.trim()}"`);
+    }
   }
   if (/검침/.test(chat)) errs.push('허위 업무: 매장 전기 검침');
   if (/생각공장[^\n]*(불일치|미납|재확인)/.test(chat)) errs.push('생각공장 근거 없는 불일치/재확인');
