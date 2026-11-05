@@ -131,7 +131,7 @@ async function workday(ymd, c) {
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..', '..');
 const RULE_FILES = ['CURRENT.md', 'docs/FIXED-EXPENSES-V1.md'];
 const rules = () => RULE_FILES.map(f => `### ${f}\n` + fs.readFileSync(path.join(REPO, f), 'utf8')).join('\n\n');
-const FIELDS = ['[고정비]', '[계약서]', '[라이센스]', '[복지]', '[기타 업무]'];
+const FIELDS = ['[고정비]', '[계약서]', '[라이센스]', '[복지]', '[정기 업무]', '[기타 업무]'];
 const REMAINING_FIELDS = FIELDS.slice(0, 4); // always shown under 오늘 남은 일
 const IMMINENT_DAYS = 7;
 const SEP = '--------------------';
@@ -357,7 +357,7 @@ function prompt(slot, date, snap, f) {
     '이 작업은 도구가 필요 없다. 명령 실행·파일 읽기·날짜 확인을 시도하지 말고(권한이 없어 실패한다) 필요한 모든 자료가 아래에 있으니 바로 최종 답을 출력하라.',
     `너는 (주)제이피프로페셔널 경영지원 담당자의 AI 비서다. 오늘은 ${date}(한국시간)이고 ${SLOTS[slot].label}를 쓴다.`,
     '도구·파일·명령을 쓰지 말고 아래 [운영 기준], [계산된 사실], [시트 스냅샷], [Chat 스페이스 메시지]만 근거로 판단하라. 다른 AI의 보고서는 존재하지 않는 것으로 간주한다.',
-    '[Chat 스페이스 메시지]에서는 업무 공지·결정, 진행 상태 변경, 오늘 처리할 일·미해결 이슈, 다가오는 일정·마감, 사전 준비 사항만 쓴다. 잡담·인사·중복은 버린다. 시트 자료와 교차 확인해 같은 업무는 하나로 합치고, 메시지에만 있는 업무는 해당 분야 또는 [기타 업무]에 넣는다.',
+    '[Chat 스페이스 메시지]에서는 업무 공지·결정, 진행 상태 변경, 오늘 처리할 일·미해결 이슈, 다가오는 일정·마감, 사전 준비 사항만 쓴다. 잡담·인사·중복은 버린다. 시트 자료와 교차 확인해 같은 업무는 하나로 합치고, 법정의무교육·보험 갱신·정기 신고·정기 점검 등 주기 있는 업무는 [정기 업무], Chat 스페이스 메시지나 별도 요청에서 발생한 비정기 업무는 [기타 업무]에 넣는다. 확인된 근거와 기한이 없는 업무는 만들지 않는다.',
     '[운영 기준]이 유일한 기준이다. 특히 "2026-11-04 사용자 확인·오류 재발 방지" 항목을 반드시 지켜라(완료 단계 재요청 금지, 근거 없는 불일치·미납·업무 생성 금지).',
     '날짜는 [계산된 사실]의 값만 쓴다. 직접 날짜를 계산하거나 새 일정을 만들지 마라. 연결 상태가 "미연결/미사용"인 자료의 내용은 쓰지 마라.',
     '',
@@ -380,7 +380,7 @@ function prompt(slot, date, snap, f) {
     `${h[3]}`,
     '[분야]',
     '- …',
-    `- 분야 태그는 ${FIELDS.join(' → ')} 순서. "${h[2]}"에는 ${REMAINING_FIELDS.join(' → ')} 4개를 항상 표시하고 업무가 없으면 "- 해당 없음", 스페이스 메시지 등 그 밖의 업무가 있을 때만 마지막에 [기타 업무]를 추가한다. 다른 대분류에서는 대상 없는 분야를 생략하고, 내용이 없으면 "- 해당 없음" 한 줄.`,
+    `- 분야 태그는 ${FIELDS.join(' → ')} 순서. "${h[2]}"에는 ${REMAINING_FIELDS.join(' → ')} 4개를 항상 표시하고 업무가 없으면 "- 해당 없음", [정기 업무]는 확인된 반복 업무가 있을 때, [기타 업무]는 Chat 또는 별도 요청의 비정기 업무가 있을 때 그 뒤에 추가한다. 다른 대분류에서는 대상 없는 분야를 생략하고, 내용이 없으면 "- 해당 없음" 한 줄.`,
     `- "${h[2]}"에는 임박 업무와 실제 미처리 사항만 넣는다. [고정비]는 [계산된 사실]의 "고정비 임박 예정" 목록에서만 고른다. 예정일 미확정 업체는 구체 근거 없이 반복하지 않는다.`,
     `- 자료 연결 상태가 "연결"이 아닌 분야(예: 복지)는 "- 확인 불가(원본 미연결)"로 쓰고 "해당 없음"으로 단정하지 않는다.`,
     '- 날짜 업무는 "N일 납부: 업체A·업체B — 처리 내용" 꼴, 날짜 오름차순, 같은 날짜·같은 처리는 한 줄로 묶음. 날짜 없는 업무는 분야 마지막.',
@@ -557,10 +557,13 @@ function toCards(chat, title, footer) {
         widgets: it.map((l, j) => para(j === 0 ? `<b>${esc(l.trim())}</b>` : esc(l.trim())))
       }));
     } else {
-      sections = fieldGroups(body).map(g => ({
-        ...(g.header ? { header: esc(g.header) } : {}),
-        widgets: [para(g.lines.map(l => esc(l.trim())).join('<br><br>'))]
-      }));
+      // Keep field headings and generous paragraph spacing, without a card
+      // section divider between every [분야].
+      const widgets = fieldGroups(body).flatMap(g => [
+        ...(g.header ? [para(`<b>${esc(g.header)}</b>`)] : []),
+        ...(g.lines.length ? [para(g.lines.map(l => esc(l.trim())).join('<br><br>'))] : [])
+      ]);
+      sections = [{ widgets: widgets.length ? widgets : [para('')] }];
     }
     if (i === 3 && footer) sections.push({ widgets: [para(`<font color="#80868b">${esc(footer)}</font>`)] });
     return { card: { header: { title: heading.trim(), ...(i === 0 ? { subtitle: title } : {}) }, sections } };

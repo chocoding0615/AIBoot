@@ -39,3 +39,11 @@ powershell -File register-tasks.ps1          # 작업 스케줄러 등록 (AIBoo
 Unregister-ScheduledTask -TaskName 'AIBoot-DualReport-*' -Confirm:$false   # 중지
 ```
 로그: `%USERPROFILE%\.aiboot\logs\YYYY-MM-DD.log` (웹훅 주소는 기록하지 않음).
+
+
+## 2026-11-05 보고 표시 및 업무 분류
+
+- `[정기 업무]`: 법정의무교육, 보험 갱신, 정기 신고·점검 등 실제 출처가 있는 반복 업무.
+- `[기타 업무]`: 지정 Chat 스페이스나 별도 요청에서 확인한 비정기 업무.
+- 오늘 남은 일의 고정비·계약서·라이센스·복지 4분야 상시 표시 유지; 정기·기타는 확인된 경우 추가.
+- Google Chat 카드 3개 구성 유지. 카드 내부 분야 사이 자동 실선을 제거하고 굵은 분야 제목과 충분한 간격만 사용.
