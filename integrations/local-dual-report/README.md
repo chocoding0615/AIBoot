@@ -32,7 +32,7 @@
 
 ## 명령
 ```
-node runner.mjs --slot morning|afternoon [--agent codex|antigravity|both] [--test [--tag latest|space|cards] [--from-report <저장본 접미사>]] [--dry-run]
+node runner.mjs --slot morning|afternoon [--agent codex|antigravity|both] [--test [--tag latest|space|cards|layout] [--from-report <저장본 접미사>]] [--dry-run]
 node runner.mjs --auth-chat --account <회사계정>   # Chat 읽기 전용 권한 1회 승인
 node runner.mjs --check-chat                     # 지정 스페이스 읽기 확인(발송 없음)
 powershell -File register-tasks.ps1          # 작업 스케줄러 등록 (AIBoot-DualReport-morning/afternoon)
@@ -47,3 +47,4 @@ Unregister-ScheduledTask -TaskName 'AIBoot-DualReport-*' -Confirm:$false   # 중
 - `[기타 업무]`: 지정 Chat 스페이스나 별도 요청에서 확인한 비정기 업무.
 - 오늘 남은 일의 고정비·계약서·라이센스·복지 4분야 상시 표시 유지; 정기·기타는 확인된 경우 추가.
 - Google Chat 카드 3개 구성 유지. 카드 내부 분야 사이 자동 실선을 제거하고 굵은 분야 제목과 충분한 간격만 사용.
+- 요약 카드의 항목 사이에도 실선 없이 빈 줄로 구분. 남는 실선은 2번 카드의 `오늘 완료`/`오늘 남은 일` 경계와 3번 카드 하단 안내 위 1개씩뿐이다.

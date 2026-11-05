@@ -28,7 +28,7 @@ const SLOTS = {
   afternoon: { start: '16:00', end: '17:30', label: '오후 업무보고' }
 };
 const AGENTS = { codex: '[Codex]', antigravity: '[Antigravity]' };
-const TEST_TAGS = { latest: () => '최신 기준 테스트', cards: () => '카드형 테스트', space: date => `${date.slice(5).replace('-', '/')} 스페이스 연동 테스트` };
+const TEST_TAGS = { latest: () => '최신 기준 테스트', cards: () => '카드형 테스트', layout: () => '카드형 테스트', space: date => `${date.slice(5).replace('-', '/')} 스페이스 연동 테스트` };
 // Chat spaces are reference material only: read-only scopes, separate token, nothing is posted there.
 const CHAT_TOKEN = path.join(HOME, 'chat-token.json');
 const CHAT_SCOPES = ['https://www.googleapis.com/auth/chat.messages.readonly', 'https://www.googleapis.com/auth/chat.spaces.readonly'];
@@ -550,17 +550,18 @@ function toCards(chat, title, footer) {
     const [heading, ...body] = b;
     let sections;
     if (i === 0) {
-      // One section per summary item: title / ■ 내용 / □ 추천 each as its own paragraph (spacing via sections).
+      // One section for all summary items (no divider between items): bold title, then ■ 내용 / □ 추천,
+      // with a blank line before every item after the first.
       const items = [];
       for (const l of body) (/^\s*\d+\.\s/.test(l) || !items.length ? items.push([l]) : items[items.length - 1].push(l));
-      sections = items.map(it => ({
-        widgets: it.map((l, j) => para(j === 0 ? `<b>${esc(l.trim())}</b>` : esc(l.trim())))
-      }));
+      const widgets = items.flatMap((it, k) =>
+        it.map((l, j) => para(j === 0 ? `${k ? '<br>' : ''}<b>${esc(l.trim())}</b>` : esc(l.trim()))));
+      sections = [{ widgets: widgets.length ? widgets : [para('')] }];
     } else {
       // Keep field headings and generous paragraph spacing, without a card
       // section divider between every [분야].
-      const widgets = fieldGroups(body).flatMap(g => [
-        ...(g.header ? [para(`<b>${esc(g.header)}</b>`)] : []),
+      const widgets = fieldGroups(body).flatMap((g, k) => [
+        ...(g.header ? [para(`${k ? '<br>' : ''}<b>${esc(g.header)}</b>`)] : []),
         ...(g.lines.length ? [para(g.lines.map(l => esc(l.trim())).join('<br><br>'))] : [])
       ]);
       sections = [{ widgets: widgets.length ? widgets : [para('')] }];
@@ -568,9 +569,10 @@ function toCards(chat, title, footer) {
     if (i === 3 && footer) sections.push({ widgets: [para(`<font color="#80868b">${esc(footer)}</font>`)] });
     return { card: { header: { title: heading.trim(), ...(i === 0 ? { subtitle: title } : {}) }, sections } };
   });
-  // 오늘 완료 + 오늘 남은 일 share one card; the second heading stays visible as its own bold section.
+  // 오늘 완료 + 오늘 남은 일 share one card: a single divider between them, the second heading bold atop its section.
   const [summary, done, remaining, next] = cards;
-  done.card.sections.push({ widgets: [para(`<b>${esc(remaining.card.header.title)}</b>`)] }, ...remaining.card.sections);
+  const [rest] = remaining.card.sections;
+  done.card.sections.push({ widgets: [para(`<b>${esc(remaining.card.header.title)}</b>`), ...rest.widgets] });
   return [summary, done, next].map((c, i) => ({ cardId: `aiboot-${i + 1}`, ...c }));
 }
 /** Plain text recovered from cards, used to prove nothing was dropped or reordered. */
