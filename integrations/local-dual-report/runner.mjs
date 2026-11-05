@@ -255,15 +255,16 @@ async function chatSnapshot(c, date, { ledger = true, slot = '' } = {}) {
   }
   all.sort((x, y) => x.m.createTime < y.m.createTime ? -1 : x.m.createTime > y.m.createTime ? 1 : 0);
   const lines = [];
-  let used = 0, cut = false;
+  let used = 0, cut = false, last = null;
   for (const { id, m } of all) {
     if (m.createTime > until) break;
     const t = stripPersonal(String(m.text || '').replace(/\s+/g, ' ').trim());
     if (t.length < 4) continue;
     const who = m.sender?.displayName || '작성자' + String(m.sender?.name || '').slice(-4);
     const line = `- [${mdhm(new Date(m.createTime))}] ${names[id]} · ${who}${m.threadReply ? ' (답글)' : ''}: ${t.length > 1000 ? t.slice(0, 1000) + '…(이하 생략)' : t}`;
-    if (used + line.length > CHAT_TEXT_MAX && lines.length) { until = [until, m.createTime].sort()[0]; cut = true; break; }
-    lines.push(line); used += line.length + 1;
+    // Cursor = last included message (the next window is `> cursor`, so the excluded one comes next time).
+    if (used + line.length > CHAT_TEXT_MAX && lines.length) { until = [until, last].sort()[0]; cut = true; break; }
+    lines.push(line); used += line.length + 1; last = m.createTime;
   }
   const head = `## 지정 스페이스 2개 — ${from} 이후 새 메시지 (시각은 KST, 오래된 순)`;
   const tail = cut || limited
@@ -809,7 +810,7 @@ async function main() {
       const st = readLedger()[key]?.status;
       // After 'sending', only an HTTP error response proves nothing was posted; a network error or a reply
       // without a message id may still have been delivered, so it stays 'sending' (never resent automatically).
-      if (!dry) updateLedger(key, { status: st === 'sending' && !/^webhook HTTP d/.test(e.message) ? 'sending' : 'failed', error: redact(e.message).slice(0, 300) });
+      if (!dry) updateLedger(key, { status: st === 'sending' && !/^webhook HTTP \d/.test(e.message) ? 'sending' : 'failed', error: redact(e.message).slice(0, 300) });
       log(`FAILED ${key}: ${e.message}`);
       process.exitCode = 1;
     }
