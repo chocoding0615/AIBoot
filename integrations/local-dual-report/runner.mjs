@@ -167,6 +167,13 @@ function fixedSchedule(date) {
     if (/고지서/.test(basis)) day = null;
     else if (/말일/.test(basis)) day = last;
     else { const d = /(\d{1,2})일/.exec(basis); day = d ? Number(d[1]) : null; }
+    // 2-month service cycles: Jan-Feb invoices due in March, Mar-Apr in May, etc.
+    // An even-numbered month has no new due item for 수유 수도요금.
+    if (vendor === '수유 수도요금' && m % 2 === 0) day = null;
+    // The original management sheet lists day 10 but does not establish a
+    // billing cycle. Until the actual cycle is confirmed, never schedule a
+    // monthly payable for 매장 안전관리자.
+    if (vendor === '매장 안전관리자') day = null;
     out.push({ row: Number(row), vendor, basis, day });
   }
   return out;
