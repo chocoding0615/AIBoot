@@ -222,7 +222,7 @@ async function chatSnapshot(c, date) {
     if ((await workday(previous, c)).ok) break;
   }
   const sentDates = Object.entries(readLedger())
-    .filter(([key, value]) => value?.status === 'sent' && /^\\d{4}-\\d{2}-\\d{2}\\|(morning|afternoon)\\|(codex|antigravity)$/.test(key))
+    .filter(([key, value]) => value?.status === 'sent' && /^\d{4}-\d{2}-\d{2}\|(morning|afternoon)\|(codex|antigravity)$/.test(key))
     .map(([key]) => key.slice(0, 10)).filter(d => d < date).sort();
   const lastSent = sentDates.at(-1);
   const sinceDay = lastSent && lastSent < previous ? lastSent : previous;
@@ -338,7 +338,6 @@ async function snapshot(c) {
   // Recurring work: the user's existing dated task register is authoritative.
   // Columns A-D only: date, task, optional detail, completion. No extra employee data.
   // Blank completion is unknown, not proof of non-completion.
-  const recurringTaskNames = new Set();
   const recurring = [];
   try {
     const v = await sheets.spreadsheets.values.get({
@@ -348,11 +347,10 @@ async function snapshot(c) {
       const due = String(row[0] || '').trim();
       const title = String(row[1] || '').trim();
       const done = row[3] === true || String(row[3]).toUpperCase() === 'TRUE';
-      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(due) || !title || done) continue;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(due) || !title || done) continue;
       const d = daysBetween(today(), due);
       // 30 days of unconfirmed overdue, 60 days of upcoming dated tasks.
       if (d < -30 || d > 60) continue;
-      recurringTaskNames.add(title);
       recurring.push(`${title}: ${due} (${d < 0 ? 'D+' + -d : 'D-' + d}) — 완료 여부 확인 필요`);
     }
     sources['정기 업무(고정비 문서 업무 탭 A:D)'] = '연결';
@@ -371,7 +369,7 @@ async function snapshot(c) {
         if (!/^\d+$/.test(String(r[0] || '').trim()) || !/^\d{4}-\d{2}-\d{2}$/.test(end || '')) return;
         const d = daysBetween(today(), end);
         const note = String((q[i] || [])[0] || '').trim();
-        if (/재가입\\s*완료/.test(note)) continue; // owner-confirmed renewal in Q: don't repeat
+        if (/재가입\s*완료/.test(note)) continue; // owner-confirmed renewal in Q: don't repeat
         if (bucketOf(d)) recurring.push(`차량 보험 만기 ${end} ${bucketOf(d)}(D-${d}): ${r[1] || ''} (${insurer || '보험사 미기재'})`);
         else if (d < 0 && d >= -365) recurring.push(`차량 보험 ${r[1] || ''}: 원본 만기 ${end} 경과 — Q열 재가입 기록 확인 필요(실제 미갱신 단정 금지)`);
       });
