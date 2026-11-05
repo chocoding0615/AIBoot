@@ -17,17 +17,7 @@
     --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
     --fs-title: 20px; --fs-head: 15px; --fs-body: 14px; --fs-meta: 12px;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --accent: #8aa8f5; --accent-soft: #1f2a45;
-      --success: #6cc79a; --success-soft: #16301f;
-      --warning: #e7b55b; --warning-soft: #352a12;
-      --danger: #f08a80; --danger-soft: #3a1a18;
-      --info: #b3a9f5; --info-soft: #262144;
-      --text: #e4e8ef; --text-muted: #a5aebd; --text-faint: #737d8d;
-      --surface: #181b22; --surface-alt: #20242d; --border: #2d323d;
-    }
-  }
+  /* Use a stable light theme across Windows and Mac for report readability. */
   * { box-sizing: border-box; }
   body { margin: 0; font: var(--fs-body)/1.55 "Pretendard", "Malgun Gothic", system-ui, sans-serif; color: var(--text); background: var(--surface-alt); }
   button { font: inherit; color: inherit; }
