@@ -136,8 +136,11 @@ const REMAINING_FIELDS = FIELDS.slice(0, 4); // always shown under 오늘 남은
 const IMMINENT_DAYS = 7;
 const SEP = '--------------------';
 const D_BUCKETS = [['D-7', 0, 7], ['D-30', 8, 30], ['D-60', 31, 60]];
+const welfareTab = date => `복지포인트 관리(${date.slice(0, 4)})`; // one tab per year
+const WELFARE_DAYS = 30;
 const bucketOf = d => (D_BUCKETS.find(([, lo, hi]) => d >= lo && d <= hi) || [null])[0];
 const norm = s => String(s).replace(/[\s()·]/g, '').toLowerCase();
+const daysBetween = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
 const addDay = (ymd, n) => new Date(Date.parse(ymd + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
 
 /** This month's rule-based due day per active vendor, parsed from the FIXED-EXPENSES-V1 table. */
@@ -295,12 +298,75 @@ async function snapshot(c) {
       sources['계약서'] = sources['라이센스'] = '조회 실패';
     }
   } else sources['계약서'] = sources['라이센스'] = '미설정';
-  sources['복지 원본'] = '미사용(직원 개인정보 포함 — 입력 제외)';
+  // Welfare: only NO (row marker) and 적용일 (E). Names, birthdays and balances are never read.
+  const welfare = [];
+  if (c.opsSpreadsheetId) {
+    try {
+      const v = await sheets.spreadsheets.values.batchGet({ spreadsheetId: c.opsSpreadsheetId, ranges: [`'${welfareTab(today())}'!A8:A`, `'${welfareTab(today())}'!E8:E`] });
+      const [no, applied] = v.data.valueRanges.map(x => x.values || []);
+      const counts = {};
+      no.forEach((r, i) => {
+        const e = String((applied[i] || [])[0] || '').trim();
+        if (!/^\d+$/.test(String(r[0] || '').trim()) || !/^\d{4}-\d{2}-\d{2}$/.test(e)) return;
+        const d = daysBetween(today(), e);
+        if (d >= 0 && d <= WELFARE_DAYS) counts[e] = (counts[e] || 0) + 1;
+      });
+      for (const [date, n] of Object.entries(counts).sort()) welfare.push({ date, n, d: daysBetween(today(), date) });
+      sources[`복지(${welfareTab(today())} 적용일)`] = '연결';
+    } catch (e) {
+      log('welfare read failed: ' + e.message);
+      sources['복지'] = '조회 실패';
+    }
+  } else sources['복지'] = '미설정';
+  // Recurring work: the training schedule table (no personal data) and vehicle insurance end dates (car model/insurer/end only).
+  const recurring = [];
+  if (c.trainingSpreadsheetId) {
+    try {
+      const v = await sheets.spreadsheets.values.get({ spreadsheetId: c.trainingSpreadsheetId, range: "'법정의무교육 업체'!B9:I40" });
+      // The sheet labels the first half '전반기'; '상반기' is accepted too.
+      const t = today(), year = t.slice(0, 4) + '년', half = Number(t.slice(5, 7)) >= 7 ? '하반기' : '전반기';
+      let y = '', h = '';
+      const rows = [];
+      for (const r of v.data.values || []) {
+        y = (r[0] || '').trim() || y; h = (r[1] || '').trim().replace('상반기', '전반기') || h;
+        if (y === year && h === half && r[4]) rows.push({ who: r[4].trim(), collect: (r[2] || '').trim(), period: (r[3] || '').trim(), done: r[5] === 'TRUE' && r[6] === 'TRUE' });
+      }
+      if (rows.length) {
+        const pending = rows.filter(r => !r.done);
+        const desc = r => `${r.who} 취합일 ${r.collect || '미입력'} · 교육기간 ${r.period || '미입력'}`;
+        recurring.push(pending.length
+          ? `법정의무교육 ${year} ${half}: 완료 체크 없음 — ${pending.map(desc).join(' / ')}`
+          : `법정의무교육 ${year} ${half}: 원본에 완료 체크됨(${rows.map(r => r.who).join('·')})`);
+      }
+      sources['정기-법정의무교육(HR_법정의무교육 일정표)'] = '연결';
+    } catch (e) {
+      log('training read failed: ' + e.message);
+      sources['정기-법정의무교육'] = '조회 실패';
+    }
+  } else sources['정기-법정의무교육'] = '미설정';
+  if (c.opsSpreadsheetId) {
+    try {
+      const v = await sheets.spreadsheets.values.batchGet({ spreadsheetId: c.opsSpreadsheetId, ranges: ["'법인차량목록'!B5:C40", "'법인차량목록'!K5:M40"] });
+      const [bc, klm] = v.data.valueRanges.map(x => x.values || []);
+      bc.forEach((r, i) => {
+        const [insurer, , end] = klm[i] || [];
+        if (!/^\d+$/.test(String(r[0] || '').trim()) || !/^\d{4}-\d{2}-\d{2}$/.test(end || '')) return;
+        // A past end date without a renewal row is not proof of a lapse — only upcoming ends are reported.
+        const d = daysBetween(today(), end);
+        if (bucketOf(d)) recurring.push(`차량 보험 만기 ${end} ${bucketOf(d)}(D-${d}): ${r[1] || ''} (${insurer || '보험사 미기재'})`);
+      });
+      sources['정기-차량보험(법인차량목록)'] = '연결';
+    } catch (e) {
+      log('vehicle insurance read failed: ' + e.message);
+      sources['정기-차량보험'] = '조회 실패';
+    }
+  } else sources['정기-차량보험'] = '미설정';
+  sources['정기 신고·점검'] = '미연결';
   sources['회사 Gmail'] = '미연결';
   sources['회사 자체 캘린더'] = '미연결';
   const ch = await chatSnapshot(c, today());
   sources['지정 Chat 스페이스 2개'] = ch.status;
-  return { text: out.join('\n'), sources, contracts, licenses, chatText: ch.status === '연결' || /^일부/.test(ch.status) ? ch.text : '' };
+  return { text: out.join('\n'), sources, contracts, licenses, welfare, recurring, chatText: ch.status === '연결' || /^일부/.test(ch.status) ? ch.text : '' };
 }
 
 /** Facts computed in code so both agents receive identical dates (no date arithmetic left to the model). */
@@ -342,9 +408,19 @@ async function facts(date, c, snap) {
     '',
     `[라이센스 — 사용 종료일 기준 D-구간]`, byBucket(snap.licenses),
     '',
+    `[복지 — ${welfareTab(date)} 적용일(E열), 오늘부터 ${WELFARE_DAYS}일 이내] 오늘 남은 일 [복지]에는 D-${IMMINENT_DAYS} 이내만 넣고, 없으면 "- 해당 없음". 인원수만 쓰고 이름은 원본에도 주지 않았다`,
+    ...(snap.welfare?.length ? snap.welfare.map(w => `- ${w.date.slice(5).replace('-', '/')} 복지포인트 적용일: ${w.n}명 (D-${w.d}${w.d <= IMMINENT_DAYS ? ', 임박' : ''})`) : ['- 없음']),
+    '',
+    `[정기 업무 — 연결된 원본에서 확인된 것만. 원본에 없는 기한·일정은 만들지 말고 "미입력"은 그대로 미입력으로 쓴다] 아래 항목이 있으면 오늘 남은 일에 [정기 업무]를 표시한다`,
+    ...(snap.recurring?.length ? snap.recurring.map(r => `- ${r}`) : ['- 없음']),
+    '- 정기 신고·점검: 일정 원본 미연결 — 내용을 쓰지 말 것',
+    '- 보험 계약(화재보험 등)이 [계약서] 목록에 있으면 [계약서]에서만 다루고 [정기 업무]에 중복하지 말 것',
+    '',
     `[자료 연결 상태] ` + Object.entries(snap.sources).map(([k, v]) => `${k}: ${v}`).join(' / ')
   ].join('\n');
-  return { text, nextHeading, sched, imminentDays, undated, sources: snap.sources, chatText: snap.chatText };
+  return { text, nextHeading, sched, imminentDays, undated, sources: snap.sources, chatText: snap.chatText,
+    welfareOk: Object.entries(snap.sources).some(([k, v]) => k.startsWith('복지') && v === '연결'),
+    welfareImminent: (snap.welfare || []).filter(w => w.d <= IMMINENT_DAYS), recurring: snap.recurring || [] };
 }
 
 /* ---------- independent agent runs ---------- */
@@ -382,7 +458,7 @@ function prompt(slot, date, snap, f) {
     '- …',
     `- 분야 태그는 ${FIELDS.join(' → ')} 순서. "${h[2]}"에는 ${REMAINING_FIELDS.join(' → ')} 4개를 항상 표시하고 업무가 없으면 "- 해당 없음", [정기 업무]는 확인된 반복 업무가 있을 때, [기타 업무]는 Chat 또는 별도 요청의 비정기 업무가 있을 때 그 뒤에 추가한다. 다른 대분류에서는 대상 없는 분야를 생략하고, 내용이 없으면 "- 해당 없음" 한 줄.`,
     `- "${h[2]}"에는 임박 업무와 실제 미처리 사항만 넣는다. [고정비]는 [계산된 사실]의 "고정비 임박 예정" 목록에서만 고른다. 예정일 미확정 업체는 구체 근거 없이 반복하지 않는다.`,
-    `- 자료 연결 상태가 "연결"이 아닌 분야(예: 복지)는 "- 확인 불가(원본 미연결)"로 쓰고 "해당 없음"으로 단정하지 않는다.`,
+    `- 자료 연결 상태가 "연결"이 아닌 분야는 "- 확인 불가(원본 미연결)"로 쓰고 "해당 없음"으로 단정하지 않는다. [복지]·[정기 업무]는 [계산된 사실]의 해당 목록만 근거로 쓴다.`,
     '- 날짜 업무는 "N일 납부: 업체A·업체B — 처리 내용" 꼴, 날짜 오름차순, 같은 날짜·같은 처리는 한 줄로 묶음. 날짜 없는 업무는 분야 마지막.',
     '- [계약서]·[라이센스]는 D-7 → D-30 → D-60 순서로 "- D-30 n건 (대상 요약)" 꼴.',
     '- 오늘 새로 확인된 완료가 없으면 오늘 완료에 "- 오늘 새로 확인된 완료 없음". 전자결재 완료 ≠ 지급 완료.',
@@ -435,7 +511,9 @@ function validate(chat, f) {
           if (/^\s*\[[^\]]+\]\s*$/.test(l)) { cur = l.trim(); items[cur] = []; } else if (cur && /^\s*-/.test(l)) items[cur].push(l);
         }
         for (const t of tags) if (!items[t]?.length) errs.push(`${h[i]} ${t}: 항목 없음("- 해당 없음" 필요)`);
-        if (f.sources?.['복지 원본'] !== '연결' && (items['[복지]'] || []).some(l => !/확인 불가/.test(l))) errs.push(`${h[i]} [복지]: 미연결 자료는 "확인 불가"로 표시`);
+        if (!f.welfareOk && (items['[복지]'] || []).some(l => !/확인 불가/.test(l))) errs.push(`${h[i]} [복지]: 미연결 자료는 "확인 불가"로 표시`);
+        if (f.welfareOk && f.welfareImminent?.length && (items['[복지]'] || []).every(l => /해당 없음|확인 불가/.test(l))) errs.push(`${h[i]} [복지]: 임박 적용일(${f.welfareImminent.map(w => w.date.slice(5)).join(',')}) 누락`);
+        if (f.recurring?.length && !tags.includes('[정기 업무]')) errs.push(`${h[i]}: 확인된 정기 업무 ${f.recurring.length}건인데 [정기 업무] 없음`);
       }
       let field = null, lastDay = -1, undated = false, lastBucket = -1;
       for (const l of block) {
@@ -629,7 +707,9 @@ async function main() {
   const snap = await snapshot(c);
   const f = await facts(date, c, snap);
   const hash = crypto.createHash('sha256').update(snap.text + f.text).digest('hex').slice(0, 12);
-  log(`snapshot ${date} ${slot} sha=${hash} chars=${snap.text.length} contracts=${snap.contracts.length} licenses=${snap.licenses.length}`);
+  log(`snapshot ${date} ${slot} sha=${hash} chars=${snap.text.length} contracts=${snap.contracts.length} licenses=${snap.licenses.length} welfare=${snap.welfare.length} recurring=${snap.recurring.length}`);
+  // Computed facts only (no agent call, nothing sent): what both agents will receive.
+  if (args['facts-only']) return console.log(f.text);
   const text = prompt(slot, date, snap, f);
   const unconnected = Object.entries(snap.sources).filter(([, v]) => v !== '연결').map(([k]) => k.replace(/\(.*\)/, ''));
 

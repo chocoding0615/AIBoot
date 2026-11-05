@@ -28,11 +28,11 @@
 - Apps Script 쪽 `installReportTrigger()`를 함께 켜면 같은 시각에 보고가 3건이 된다. 시험 기간에는 켜지 않는다.
 
 ## 설정·비밀값
-`%USERPROFILE%\.aiboot\config.json` (사용자 전용 권한, 저장소 밖): `webhookUrl`, `spreadsheetId`, `googleAuthDir`, `trialStart`, `trialEnd`, `vacations`, `holidaysExtra`, `workdaysExtra`, `contractsSpreadsheetId`, `chatSpaces`(스페이스 ID 배열). **이 저장소에 값을 쓰지 않는다.**
+`%USERPROFILE%\.aiboot\config.json` (사용자 전용 권한, 저장소 밖): `webhookUrl`, `spreadsheetId`, `googleAuthDir`, `trialStart`, `trialEnd`, `vacations`, `holidaysExtra`, `workdaysExtra`, `contractsSpreadsheetId`, `opsSpreadsheetId`(AD_운영 관리: 복지 적용일·법인차량 보험), `trainingSpreadsheetId`(HR_법정의무교육 일정표), `chatSpaces`(스페이스 ID 배열). **이 저장소에 값을 쓰지 않는다.**
 
 ## 명령
 ```
-node runner.mjs --slot morning|afternoon [--agent codex|antigravity|both] [--test [--tag latest|space|cards|layout] [--from-report <저장본 접미사>]] [--dry-run]
+node runner.mjs --slot morning|afternoon [--agent codex|antigravity|both] [--test [--tag latest|space|cards|layout] [--from-report <저장본 접미사>]] [--dry-run] [--facts-only]   # --facts-only: AI 호출·발송 없이 계산된 사실만 출력
 node runner.mjs --auth-chat --account <회사계정>   # Chat 읽기 전용 권한 1회 승인
 node runner.mjs --check-chat                     # 지정 스페이스 읽기 확인(발송 없음)
 powershell -File register-tasks.ps1          # 작업 스케줄러 등록 (AIBoot-DualReport-morning/afternoon)
