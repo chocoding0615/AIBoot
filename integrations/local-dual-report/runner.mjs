@@ -36,7 +36,8 @@ const CHAT_SCOPES = ['https://www.googleapis.com/auth/chat.messages.readonly', '
 // so weekends, holidays and long vacations accumulate. Truncation is always marked as incomplete.
 const CHAT_LOOKBACK_MAX_DAYS = 45;
 const CHAT_MSG_MAX = 2000;
-const CHAT_TEXT_MAX = 24000;
+const CHAT_TEXT_MAX = 8000; // keeps the Antigravity prompt (a command-line argument) under AGY_PROMPT_MAX
+const AGY_PROMPT_MAX = 32000; // Windows command line is 32,767 chars (incl. exe path and flags)
 const HOLIDAY_ICS = 'https://calendar.google.com/calendar/ical/ko.south_korea.official%23holiday%40group.v.calendar.google.com/public/basic.ics';
 const AGENT_TIMEOUT_MS = 10 * 60 * 1000;
 const CHAT_MAX = 2000; // Chat body limit; a report over this is not sent
@@ -72,7 +73,11 @@ function withLock(fn) {
   }
   throw new Error('ledger lock timeout');
 }
-const readLedger = () => { try { return JSON.parse(fs.readFileSync(LEDGER, 'utf8')); } catch { return {}; } };
+const readLedger = () => {
+  let raw;
+  try { raw = fs.readFileSync(LEDGER, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return {}; throw e; }
+  try { return JSON.parse(raw); } catch { throw new Error('ledger.json 손상 — 발송 이력 보호를 위해 중단(백업에서 복구 필요)'); }
+};
 function updateLedger(key, patch) {
   return withLock(() => {
     const l = readLedger();
@@ -221,63 +226,70 @@ async function authChat(c) {
   log('chat read-only token saved (scopes: ' + granted.filter(s => /chat/.test(s)).join(' ') + ')');
 }
 
-/** Recent messages from the configured spaces (read-only). Never claims a read that failed. */
-async function chatSnapshot(c, date, { ledger = true } = {}) {
+/** Messages from the configured spaces (read-only), oldest first across spaces, up to CHAT_TEXT_MAX.
+ *  Never claims a read that failed. \`readAt\` is where the next report starts: the read time, or the last
+ *  included message when the budget/page limit cut the list (the rest comes in the next report). */
+async function chatSnapshot(c, date, { ledger = true, slot = '' } = {}) {
   const ids = c.chatSpaces || [];
   if (!ids.length) return { status: '미설정', text: '' };
   if (!fs.existsSync(CHAT_TOKEN)) return { status: '미연결(읽기 권한 미승인)', text: '' };
   const { google, auth } = chatOauth(c, JSON.parse(fs.readFileSync(CHAT_TOKEN, 'utf8')));
   const chat = google.chat({ version: 'v1', auth });
-  const since = await chatSince(date, c, ledger);
-  const readAt = new Date().toISOString(); // the next report starts here once this one is sent
+  const since = await chatSince(date, c, ledger, slot);
+  let until = new Date().toISOString(); // upper bound, so a message is never in two windows
   const from = mdhm(new Date(since));
-  const span = `${from} 이후 새 메시지`;
-  const out = [], failed = [], counts = [], incomplete = [];
+  const all = [], failed = [], counts = [], names = {};
+  let limited = false;
   for (const id of ids) {
     try {
-      let name = id;
-      try { name = (await chat.spaces.get({ name: 'spaces/' + id })).data.displayName || id; } catch {}
+      names[id] = id;
+      try { names[id] = (await chat.spaces.get({ name: 'spaces/' + id })).data.displayName || id; } catch {}
       const msgs = [];
       let pageToken;
       do {
-        const r = await chat.spaces.messages.list({ parent: 'spaces/' + id, filter: `createTime > "${since}"`, orderBy: 'createTime asc', pageSize: 200, pageToken });
+        const r = await chat.spaces.messages.list({ parent: 'spaces/' + id, filter: `createTime > "${since}" AND createTime < "${until}"`, orderBy: 'createTime asc', pageSize: 200, pageToken });
         msgs.push(...(r.data.messages || []));
         pageToken = r.data.nextPageToken;
       } while (pageToken && msgs.length < CHAT_MSG_MAX);
-      if (pageToken) incomplete.push(id);
+      // Page limit: later messages of this space were not fetched, so the window stops at its last one.
+      if (pageToken && msgs.length) { until = [until, msgs.at(-1).createTime].sort()[0]; limited = true; }
       counts.push(`${id}=${msgs.length}${pageToken ? '+' : ''}`);
-      out.push(`## ${name} (${span} ${msgs.length}건${pageToken ? ' 이상, 이후 생략' : ''}, 시각은 KST)`);
-      for (const m of msgs) {
-        const t = stripPersonal(String(m.text || '').replace(/\s+/g, ' ').trim());
-        if (t.length < 4) continue;
-        const when = mdhm(new Date(m.createTime));
-        const who = m.sender?.displayName || '작성자' + String(m.sender?.name || '').slice(-4);
-        const reply = m.threadReply ? ' (답글)' : '';
-        out.push(`- [${when}] ${who}${reply}: ${t.slice(0, 400)}`);
-      }
+      for (const m of msgs) all.push({ id, m });
     } catch (e) {
       failed.push(id);
       log(`chat read failed ${id}: ${e.response?.data?.error?.status || ''} ${e.response?.data?.error?.message || e.message}`.slice(0, 300));
     }
   }
-  let text = out.join('\n');
-  if (text.length > CHAT_TEXT_MAX) {
-    text = '(누적 메시지 일부 생략 — 원문 전체 확인 필요)\n' + text.slice(-CHAT_TEXT_MAX);
-    incomplete.push('text-limit');
+  all.sort((x, y) => x.m.createTime < y.m.createTime ? -1 : x.m.createTime > y.m.createTime ? 1 : 0);
+  const lines = [];
+  let used = 0, cut = false, last = null;
+  for (const { id, m } of all) {
+    if (m.createTime > until) break;
+    const t = stripPersonal(String(m.text || '').replace(/\s+/g, ' ').trim());
+    if (t.length < 4) continue;
+    const who = m.sender?.displayName || '작성자' + String(m.sender?.name || '').slice(-4);
+    const line = `- [${mdhm(new Date(m.createTime))}] ${names[id]} · ${who}${m.threadReply ? ' (답글)' : ''}: ${t.length > 1000 ? t.slice(0, 1000) + '…(이하 생략)' : t}`;
+    // Cursor = last included message (the next window is `> cursor`, so the excluded one comes next time).
+    if (used + line.length > CHAT_TEXT_MAX && lines.length) { until = [until, last].sort()[0]; cut = true; break; }
+    lines.push(line); used += line.length + 1; last = m.createTime;
   }
-  const status = failed.length === ids.length ? '조회 실패'
-    : failed.length || incomplete.length ? `일부 조회/자료 누락(실패 ${failed.length}, 제한 ${incomplete.length})` : '연결';
-  // Only a complete read moves the window forward, so a partial read is retried rather than lost.
-  return { status, text, from, counts, incomplete: incomplete.length, readAt: status === '연결' ? readAt : undefined };
+  const head = `## 지정 스페이스 2개 — ${from} 이후 새 메시지 (시각은 KST, 오래된 순)`;
+  const tail = cut || limited
+    ? [`(메시지가 많아 ${mdhm(new Date(until))} 전까지만 포함 — 이후 메시지는 다음 보고에서 이어서 다룬다)`] : [];
+  const text = [head, ...lines, ...tail].join('\n');
+  const status = failed.length === ids.length ? '조회 실패' : failed.length ? `일부 조회 실패(${failed.length}/${ids.length})` : '연결';
+  // A failed space keeps the window where it was, so nothing is lost (the other space may repeat once).
+  return { status, text, from, counts, readAt: failed.length ? undefined : until };
 }
-/** Chat window start (ISO). Each message is reported once: after the Chat read time stored with the
- *  last sent regular report. Without one (first run, or no complete read yet): the previous workday
- *  (weekends, holidays, vacations skipped) or the last sent report day if older. Never more than 45 days back. */
-async function chatSince(date, c, useLedger = true) {
+/** Chat window start (ISO). Each message is reported once: after the Chat read point stored with the
+ *  last sent regular report of an earlier slot (a retry of this slot reads the same window again).
+ *  Without one: the previous workday (weekends, holidays, vacations skipped) or the last sent report day
+ *  if older. Never more than 45 days back. */
+async function chatSince(date, c, useLedger = true, slot = '') {
   const floor = addDay(date, -CHAT_LOOKBACK_MAX_DAYS);
   const sent = useLedger ? Object.entries(readLedger())
     .filter(([key, value]) => value?.status === 'sent' && /^\d{4}-\d{2}-\d{2}\|(morning|afternoon)\|(codex|antigravity)$/.test(key)
-      && key.slice(0, 10) <= date && key.slice(0, 10) >= floor) : [];
+      && key.slice(0, 10) <= date && key.slice(0, 10) >= floor && !key.startsWith(`${date}|${slot}|`)) : [];
   const lastRead = sent.map(([, v]) => v.chatUntil).filter(Boolean).sort().at(-1);
   if (lastRead) return lastRead;
   let previous = floor;
@@ -288,7 +300,7 @@ async function chatSince(date, c, useLedger = true) {
 }
 const stripPersonal = s => String(s).replace(/01[016789]-?\d{3,4}-?\d{4}/g, '<전화번호 생략>');
 /** @return {{text:string, sources:object, contracts:object[], licenses:object[]}} */
-async function snapshot(c) {
+async function snapshot(c, slot = '') {
   const sheets = sheetsClient(c);
   const sources = {};
   const r = await sheets.spreadsheets.get({
@@ -319,7 +331,7 @@ async function snapshot(c) {
       const v = await sheets.spreadsheets.values.batchGet({ spreadsheetId: c.contractsSpreadsheetId, ranges: ["'계약서 검색'!A6:N200", "'프로그램(2026)'!A5:D60"] });
       // A blank end date renders D-DAY as 0 — only rows with a real end date and numeric D count.
       const dval = (end, dd) => /^\d{4}-\d{2}-\d{2}$/.test(String(end || '').trim()) && /^-?[\d,]+$/.test(String(dd || '').trim())
-        ? Number(String(dd).replace(/,/g, '')) : NaN;
+        ? daysBetween(today(), String(end).trim()) : NaN;
       for (const row of v.data.valueRanges[0].values || []) {
         const d = dval(row[7], row[8]);
         if (!row[2] || !Number.isFinite(d) || row[13] === 'TRUE' || !bucketOf(d)) continue;
@@ -406,7 +418,7 @@ async function snapshot(c) {
   sources['정기 신고·점검'] = '미연결';
   sources['회사 Gmail'] = '미연결';
   sources['회사 자체 캘린더'] = '미연결';
-  const ch = await chatSnapshot(c, today());
+  const ch = await chatSnapshot(c, today(), { slot });
   sources['지정 Chat 스페이스 2개'] = ch.status;
   return { text: out.join('\n'), sources, contracts, licenses, welfare, recurring, chatText: ch.status === '연결' || /^일부/.test(ch.status) ? ch.text : '', chatReadAt: ch.readAt };
 }
@@ -415,7 +427,7 @@ async function snapshot(c) {
 async function facts(date, c, snap) {
   const wd = await workday(date, c);
   let next = date;
-  for (let i = 0; i < 14; i++) { next = addDay(next, 1); if ((await workday(next, c)).ok) break; }
+  for (let i = 0; i < CHAT_LOOKBACK_MAX_DAYS; i++) { next = addDay(next, 1); if ((await workday(next, c)).ok) break; }
   const dow = new Date(date + 'T00:00:00Z').getUTCDay();
   const mmdd = next.slice(5).replace('-', '/');
   const nextHeading = next === addDay(date, 1) ? `내일 업무 (${mmdd})`
@@ -564,8 +576,8 @@ function validate(chat, f) {
           const d = /^\s*-\s*(?:\d{1,2}\/)?(\d{1,2})일?/.exec(l);
           if (d && /^\s*-\s*\d/.test(l)) {
             const day = Number(d[1]);
-            // Under 오늘 남은 일, order by position in the imminent window (handles month wrap).
-            const ord = i === 2 ? f.imminentDays.indexOf(day) : day;
+            // Order by position in the imminent window (handles month wrap); days outside it come after.
+            const pos = f.imminentDays.indexOf(day), ord = i === 2 ? pos : pos >= 0 ? pos : 100 + day;
             if (i === 2 && ord < 0) errs.push(`${h[i]} [고정비]: 임박(7일 이내) 아님 "${l.trim()}"`);
             if (undated) errs.push(`${h[i]} [고정비]: 날짜 없는 업무 뒤에 날짜 업무`);
             if (ord < lastDay) errs.push(`${h[i]} [고정비]: 날짜 오름차순 아님`);
@@ -587,8 +599,10 @@ function validate(chat, f) {
       }
     }
   }
-  // Dates must match the computed rule-based schedule for every vendor named on the line.
+  // Dates must match the computed rule-based schedule for every vendor named on the line (not in 오늘 완료).
+  const doneLines = idx[1] >= 0 && idx[2] > idx[1] ? new Set(lines.slice(idx[1] + 1, idx[2])) : new Set();
   for (const l of lines) {
+    if (doneLines.has(l)) continue;
     const days = [...l.matchAll(/(?:\d{1,2}\/)?(\d{1,2})일/g), ...l.matchAll(/\d{1,2}\/(\d{1,2})(?!일)/g)].map(m => Number(m[1]));
     if (!days.length) continue;
     for (const s of f.sched) {
@@ -644,12 +658,13 @@ async function generate(agent, text) {
       if (r.code !== 0 || !body) throw new Error('codex exit ' + r.code + ' ' + r.err.slice(-300));
       return body;
     }
+    if (text.length > AGY_PROMPT_MAX) throw new Error(`antigravity prompt too long (${text.length}>${AGY_PROMPT_MAX})`);
     const agy = path.join(os.homedir(), 'AppData/Local/agy/bin/agy.exe');
     const r = await run(agy, ['-p', text, '--mode', 'plan', '--print-timeout', '540s'], { cwd: work });
     if (/quota|rate.?limit|resource.?exhausted|429/i.test(r.err)) throw new Error('antigravity QUOTA (no retry)');
     if (r.code !== 0 || !r.out.trim()) throw new Error('antigravity exit ' + r.code + ' ' + r.err.slice(-300));
     return r.out.trim();
-  } finally { fs.rmSync(work, { recursive: true, force: true }); }
+  } finally { try { fs.rmSync(work, { recursive: true, force: true }); } catch {} }
 }
 
 /* ---------- Cards V2 rendering (presentation only: the validated text is carried over verbatim) ---------- */
@@ -753,13 +768,14 @@ async function main() {
 
   const tag = test && args.tag ? String(args.tag) : '';
   if (tag && !TEST_TAGS[tag]) throw new Error('--tag ' + Object.keys(TEST_TAGS).join('|'));
-  const snap = await snapshot(c);
+  const snap = await snapshot(c, slot);
   const f = await facts(date, c, snap);
   const hash = crypto.createHash('sha256').update(snap.text + f.text).digest('hex').slice(0, 12);
   log(`snapshot ${date} ${slot} sha=${hash} chars=${snap.text.length} contracts=${snap.contracts.length} licenses=${snap.licenses.length} welfare=${snap.welfare.length} recurring=${snap.recurring.length}`);
+  const text = prompt(slot, date, snap, f);
+  log(`prompt chars=${text.length} chat=${snap.chatText.length}`);
   // Computed facts only (no agent call, nothing sent): what both agents will receive.
   if (args['facts-only']) return console.log(f.text);
-  const text = prompt(slot, date, snap, f);
   const unconnected = Object.entries(snap.sources).filter(([, v]) => v !== '연결').map(([k]) => k.replace(/\(.*\)/, ''));
 
   await Promise.all(agents.map(async agent => {
@@ -799,8 +815,9 @@ async function main() {
       log(`sent ${key} messageId=${r.id} cards=${r.cards} ${Date.now() - t0}ms`);
     } catch (e) {
       const st = readLedger()[key]?.status;
-      // 'sending' that failed with a definite HTTP/network error is safe to mark failed; unknown stays 'sending'.
-      if (!dry) updateLedger(key, { status: st === 'sending' && !/^webhook/.test(e.message) ? 'sending' : 'failed', error: redact(e.message).slice(0, 300) });
+      // After 'sending', only an HTTP error response proves nothing was posted; a network error or a reply
+      // without a message id may still have been delivered, so it stays 'sending' (never resent automatically).
+      if (!dry) updateLedger(key, { status: st === 'sending' && !/^webhook HTTP \d/.test(e.message) ? 'sending' : 'failed', error: redact(e.message).slice(0, 300) });
       log(`FAILED ${key}: ${e.message}`);
       process.exitCode = 1;
     }
