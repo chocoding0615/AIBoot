@@ -32,8 +32,10 @@ const TEST_TAGS = { latest: () => '최신 기준 테스트', cards: () => '카�
 // Chat spaces are reference material only: read-only scopes, separate token, nothing is posted there.
 const CHAT_TOKEN = path.join(HOME, 'chat-token.json');
 const CHAT_SCOPES = ['https://www.googleapis.com/auth/chat.messages.readonly', 'https://www.googleapis.com/auth/chat.spaces.readonly'];
-const CHAT_LOOKBACK_DAYS = 7;
-const CHAT_TEXT_MAX = 16000;
+// Messages since 00:00 KST of the previous workday, so weekends, holidays and long vacations accumulate.
+const CHAT_LOOKBACK_MAX_DAYS = 45;
+const CHAT_MSG_MAX = 2000;
+const CHAT_TEXT_MAX = 24000;
 const HOLIDAY_ICS = 'https://calendar.google.com/calendar/ical/ko.south_korea.official%23holiday%40group.v.calendar.google.com/public/basic.ics';
 const AGENT_TIMEOUT_MS = 10 * 60 * 1000;
 const CHAT_MAX = 2000; // Chat body limit; a report over this is not sent
@@ -164,10 +166,10 @@ function fixedSchedule(date) {
 }
 
 /* ---------- read-only snapshot ---------- */
-function oauth(c, creds) {
+function oauth(c, creds, keysFile = path.join(c.googleAuthDir, 'dist/gcp-oauth.keys.json')) {
   const require = createRequire(path.join(c.googleAuthDir, 'package.json'));
   const { google } = require('googleapis');
-  const keys = JSON.parse(fs.readFileSync(path.join(c.googleAuthDir, 'dist/gcp-oauth.keys.json'), 'utf8'));
+  const keys = JSON.parse(fs.readFileSync(keysFile, 'utf8'));
   const k = keys.installed || keys.web;
   const auth = new google.auth.OAuth2(k.client_id, k.client_secret, (k.redirect_uris || [])[0]);
   if (creds) auth.setCredentials(creds);
@@ -177,6 +179,8 @@ function sheetsClient(c) {
   const { google, auth } = oauth(c, JSON.parse(fs.readFileSync(path.join(c.googleAuthDir, 'dist/.gsheets-server-credentials.json'), 'utf8')));
   return google.sheets({ version: 'v4', auth });
 }
+// Chat may use its own OAuth client (another GCP project with the Chat API enabled); Sheets auth is untouched.
+const chatOauth = (c, creds) => oauth(c, creds, c.chatOAuthKeys ? path.resolve(HOME, c.chatOAuthKeys) : undefined);
 
 /** One-time consent for the read-only Chat token (loopback redirect, user approves in the browser). */
 async function authChat(c) {
@@ -184,7 +188,7 @@ async function authChat(c) {
   const server = http.createServer();
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const redirect = `http://127.0.0.1:${server.address().port}`;
-  const { auth } = oauth(c);
+  const { auth } = chatOauth(c);
   const url = auth.generateAuthUrl({ access_type: 'offline', prompt: 'consent', scope: CHAT_SCOPES, redirect_uri: redirect,
     ...(typeof args.account === 'string' ? { login_hint: args.account } : {}) });
   spawn('rundll32', ['url.dll,FileProtocolHandler', url], { detached: true, stdio: 'ignore' }).unref();
@@ -203,6 +207,7 @@ async function authChat(c) {
   const granted = String(tokens.scope || '').split(' ');
   const missing = CHAT_SCOPES.filter(s => !granted.includes(s));
   if (missing.length) throw new Error('일부 권한 미승인: ' + missing.join(', '));
+  if (fs.existsSync(CHAT_TOKEN)) fs.writeFileSync(CHAT_TOKEN.replace(/\.json$/, `.backup-${Date.now()}.json`), fs.readFileSync(CHAT_TOKEN), { mode: 0o600 });
   fs.writeFileSync(CHAT_TOKEN, JSON.stringify(tokens), { mode: 0o600 });
   log('chat read-only token saved (scopes: ' + granted.filter(s => /chat/.test(s)).join(' ') + ')');
 }
@@ -212,10 +217,12 @@ async function chatSnapshot(c, date) {
   const ids = c.chatSpaces || [];
   if (!ids.length) return { status: '미설정', text: '' };
   if (!fs.existsSync(CHAT_TOKEN)) return { status: '미연결(읽기 권한 미승인)', text: '' };
-  const { google, auth } = oauth(c, JSON.parse(fs.readFileSync(CHAT_TOKEN, 'utf8')));
+  const { google, auth } = chatOauth(c, JSON.parse(fs.readFileSync(CHAT_TOKEN, 'utf8')));
   const chat = google.chat({ version: 'v1', auth });
-  const since = new Date(Date.parse(addDay(date, -CHAT_LOOKBACK_DAYS) + 'T00:00:00+09:00')).toISOString();
-  const out = [], failed = [];
+  const from = await chatSince(date, c);
+  const since = new Date(Date.parse(from + 'T00:00:00+09:00')).toISOString();
+  const span = `직전 근무일 ${from.slice(5).replace('-', '/')} 00:00 이후`;
+  const out = [], failed = [], counts = [];
   for (const id of ids) {
     try {
       let name = id;
@@ -226,8 +233,9 @@ async function chatSnapshot(c, date) {
         const r = await chat.spaces.messages.list({ parent: 'spaces/' + id, filter: `createTime > "${since}"`, orderBy: 'createTime asc', pageSize: 200, pageToken });
         msgs.push(...(r.data.messages || []));
         pageToken = r.data.nextPageToken;
-      } while (pageToken && msgs.length < 600);
-      out.push(`## ${name} (최근 ${CHAT_LOOKBACK_DAYS}일 ${msgs.length}건, 시각은 KST)`);
+      } while (pageToken && msgs.length < CHAT_MSG_MAX);
+      counts.push(`${id}=${msgs.length}${pageToken ? '+' : ''}`);
+      out.push(`## ${name} (${span} ${msgs.length}건${pageToken ? ' 이상, 이후 생략' : ''}, 시각은 KST)`);
       for (const m of msgs) {
         const t = stripPersonal(String(m.text || '').replace(/\s+/g, ' ').trim());
         if (t.length < 4) continue;
@@ -244,7 +252,13 @@ async function chatSnapshot(c, date) {
   let text = out.join('\n');
   if (text.length > CHAT_TEXT_MAX) text = '(앞부분 생략)\n' + text.slice(-CHAT_TEXT_MAX);
   const status = !failed.length ? '연결' : failed.length === ids.length ? '조회 실패' : `일부 조회 실패(${failed.length}/${ids.length})`;
-  return { status, text };
+  return { status, text, from, counts };
+}
+/** Start date of the Chat window: the previous workday (vacations, weekends and holidays skipped). */
+async function chatSince(date, c) {
+  for (let d = addDay(date, -1), k = 1; k <= CHAT_LOOKBACK_MAX_DAYS; d = addDay(d, -1), k++)
+    if ((await workday(d, c)).ok) return d;
+  return addDay(date, -CHAT_LOOKBACK_MAX_DAYS);
 }
 const stripPersonal = s => String(s).replace(/01[016789]-?\d{3,4}-?\d{4}/g, '<전화번호 생략>');
 /** @return {{text:string, sources:object, contracts:object[], licenses:object[]}} */
@@ -683,8 +697,11 @@ async function post(url, body) {
 async function main() {
   if (args['auth-chat']) return authChat(cfg());
   if (args['check-chat']) {
-    const s = await chatSnapshot(cfg(), today());
-    return log(`chat check: ${s.status} lines=${s.text ? s.text.split('\n').length : 0}`);
+    // --as-of / --vacation simulate another day (e.g. return from long leave); message content is never printed.
+    const c = cfg(), asOf = typeof args['as-of'] === 'string' ? args['as-of'] : today();
+    if (typeof args.vacation === 'string') c.vacations = [...(c.vacations || []), ...args.vacation.split(',').map(s => s.trim()).filter(Boolean)];
+    const s = await chatSnapshot(c, asOf);
+    return log(`chat check (as of ${asOf}): ${s.status} since=${s.from || '-'} messages=${(s.counts || []).join(' ') || '-'} lines=${s.text ? s.text.split('\n').length : 0}`);
   }
   const slot = args.slot;
   if (!SLOTS[slot]) throw new Error('--slot morning|afternoon');

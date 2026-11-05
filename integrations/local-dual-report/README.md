@@ -4,7 +4,7 @@
 
 ## 동작
 1. `JP매월 지출`(기준)과 `AIBoot_데일리마감`(변경 이력)을 **읽기 전용**(spreadsheets.get)으로 스냅샷. 연노랑(#fff2cc)은 `(연노랑)` 표시 = 지출결의 제출, 납부 완료 아님. `고정비 대시보드`(폐기 예정)와 `시트내용`(계정정보 포함)은 읽지 않는다.
-   - 지정 Google Chat 스페이스 2개(`chatSpaces`)의 최근 7일 메시지를 **읽기 전용 별도 토큰**(`chat.messages.readonly`, `chat.spaces.readonly`)으로 함께 읽는다. 이 스페이스로는 아무것도 보내지 않는다. 읽기 실패 시 `조회 실패`로 표시하고 내용을 쓰지 않는다.
+   - 지정 Google Chat 스페이스 2개(`chatSpaces`)의 **직전 근무일 00:00(KST) 이후** 메시지(주말·공휴일·`vacations` 휴가는 건너뛰어 누적, 최대 45일)를 **읽기 전용 별도 토큰**(`chat.messages.readonly`, `chat.spaces.readonly`)으로 함께 읽는다. 이 스페이스로는 아무것도 보내지 않는다. 읽기 실패 시 `조회 실패`로 표시하고 내용을 쓰지 않는다.
 2. 근무일 정보(오늘·다음 근무일·35일 내 공휴일·휴가)와 같은 스냅샷으로 두 CLI를 **각자 빈 임시 폴더에서 별도 프로세스**로 실행. 서로의 출력은 프롬프트에 들어가지 않는다.
    - Codex: `codex exec --sandbox read-only --ephemeral` (ChatGPT 구독)
    - Antigravity: `agy -p … --mode plan` (Google 계정 한도, 한도 소진 시 재시도 안 함)
@@ -24,17 +24,17 @@
 ## 제한 (중요)
 - **PC가 꺼져 있거나 로그아웃 상태면 보고가 나가지 않는다.** 시간대가 지난 뒤 켜면 그 회차는 건너뛴다. Codex/Antigravity는 이 PC의 구독 로그인으로만 실행된다. 클라우드 대체 수단은 유료 API가 필요해 쓰지 않는다.
 - AI가 받는 자료는 시트 스냅샷과 지정 스페이스 2개 메시지뿐이다(Gmail·은행·사이트 없음). 시트 토큰은 `spreadsheets`, Chat 토큰(`%USERPROFILE%.aibootchat-token.json`)은 읽기 전용 2개 권한만 가진다.
-- Chat API는 OAuth 클라이언트의 GCP 프로젝트에서 **Google Chat API 사용 설정**이 되어 있어야 읽힌다.
+- Chat API는 OAuth 클라이언트의 GCP 프로젝트에서 **Google Chat API 사용 설정**이 되어 있어야 읽힌다. Chat만 다른 프로젝트의 클라이언트를 쓰려면 `config.json`의 `chatOAuthKeys`에 그 클라이언트 JSON 경로(상대 경로는 `%USERPROFILE%\.aiboot` 기준)를 넣고 `--auth-chat`을 다시 실행한다. Sheets 인증은 바뀌지 않는다. 재승인 시 기존 Chat 토큰은 `chat-token.backup-*.json`으로 남는다.
 - Apps Script 쪽 `installReportTrigger()`를 함께 켜면 같은 시각에 보고가 3건이 된다. 시험 기간에는 켜지 않는다.
 
 ## 설정·비밀값
-`%USERPROFILE%\.aiboot\config.json` (사용자 전용 권한, 저장소 밖): `webhookUrl`, `spreadsheetId`, `googleAuthDir`, `trialStart`, `trialEnd`, `vacations`, `holidaysExtra`, `workdaysExtra`, `contractsSpreadsheetId`, `opsSpreadsheetId`(AD_운영 관리: 복지 적용일·법인차량 보험), `trainingSpreadsheetId`(HR_법정의무교육 일정표), `chatSpaces`(스페이스 ID 배열). **이 저장소에 값을 쓰지 않는다.**
+`%USERPROFILE%\.aiboot\config.json` (사용자 전용 권한, 저장소 밖): `webhookUrl`, `spreadsheetId`, `googleAuthDir`, `trialStart`, `trialEnd`, `vacations`, `holidaysExtra`, `workdaysExtra`, `contractsSpreadsheetId`, `opsSpreadsheetId`(AD_운영 관리: 복지 적용일·법인차량 보험), `trainingSpreadsheetId`(HR_법정의무교육 일정표), `chatSpaces`(스페이스 ID 배열), `chatOAuthKeys`(선택: Chat 전용 OAuth 클라이언트 JSON 경로). **이 저장소에 값을 쓰지 않는다.**
 
 ## 명령
 ```
 node runner.mjs --slot morning|afternoon [--agent codex|antigravity|both] [--test [--tag latest|space|cards|layout] [--from-report <저장본 접미사>]] [--dry-run] [--facts-only]   # --facts-only: AI 호출·발송 없이 계산된 사실만 출력
 node runner.mjs --auth-chat --account <회사계정>   # Chat 읽기 전용 권한 1회 승인
-node runner.mjs --check-chat                     # 지정 스페이스 읽기 확인(발송 없음)
+node runner.mjs --check-chat [--as-of YYYY-MM-DD] [--vacation 날짜,날짜]   # 지정 스페이스 읽기 확인(발송 없음, 건수만 출력)
 powershell -File register-tasks.ps1          # 작업 스케줄러 등록 (AIBoot-DualReport-morning/afternoon)
 Unregister-ScheduledTask -TaskName 'AIBoot-DualReport-*' -Confirm:$false   # 중지
 ```
