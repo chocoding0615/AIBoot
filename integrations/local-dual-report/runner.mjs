@@ -376,20 +376,21 @@ async function snapshot(c) {
   }
   // The separate HR training roster does not define a due date; do not
   // substitute its collection date or blank training period for the dated task.
-  if (c.opsSpreadsheetId) {
+  // Vehicle insurance renewal: 계약서(DB) only — C 분류, E 내용, I 종료일, Q 비고. An ended 차량보험
+  // contract is settled only when Q says 재가입 완료; upcoming ends are already under [계약서].
+  if (c.contractsSpreadsheetId) {
     try {
-      const v = await sheets.spreadsheets.values.batchGet({ spreadsheetId: c.opsSpreadsheetId, ranges: ["'법인차량목록'!B5:C40", "'법인차량목록'!K5:M40", "'법인차량목록'!O5:Q40"] });
-      const [bc, klm, q] = v.data.valueRanges.map(x => x.values || []);
-      bc.forEach((r, i) => {
-        const [insurer, , end] = klm[i] || [];
-        if (!/^\d+$/.test(String(r[0] || '').trim()) || !/^\d{4}-\d{2}-\d{2}$/.test(end || '')) return;
+      const v = await sheets.spreadsheets.values.batchGet({ spreadsheetId: c.contractsSpreadsheetId, ranges: ["'계약서(DB)'!C5:C300", "'계약서(DB)'!E5:E300", "'계약서(DB)'!I5:I300", "'계약서(DB)'!Q5:Q300"] });
+      const [cc, ee, ii, qq] = v.data.valueRanges.map(x => (x.values || []).map(r => String(r[0] || '').trim()));
+      ee.forEach((e, i) => {
+        const end = ii[i] || '';
+        if (cc[i] !== '보험료' || !/차량보험/.test(e) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || /재가입\s*완료/.test(qq[i] || '')) return;
         const d = daysBetween(today(), end);
-        const note = (q[i] || []).join(' ').trim(); // O(비고)~Q: renewal note may be in either
-        if (/재가입\s*완료/.test(note)) return; // owner-confirmed renewal in Q: don't repeat
-        if (bucketOf(d)) recurring.push(`차량 보험 만기 ${end} ${bucketOf(d)}(D-${d}): ${r[1] || ''} (${insurer || '보험사 미기재'})`);
-        else if (d < 0 && d >= -365) recurring.push(`차량 보험 ${r[1] || ''}: 원본 만기 ${end} 경과 — 비고(O)·Q열 재가입 기록 확인 필요(실제 미갱신 단정 금지)`);
+        // Car model only (no plate or person name).
+        const car = (/BMW|벤츠|카니발|모닝/.exec(e) || ['차량'])[0];
+        if (d < 0 && d >= -365) recurring.push(`차량 보험 ${car}: 계약서(DB) 종료 ${end} — Q열(비고) 재가입 완료 표시 없음, 확인 필요(실제 미갱신 단정 금지)`);
       });
-      sources['정기-차량보험(법인차량목록)'] = '연결';
+      sources['정기-차량보험(계약서(DB) Q열)'] = '연결';
     } catch (e) {
       log('vehicle insurance read failed: ' + e.message);
       sources['정기-차량보험'] = '조회 실패';

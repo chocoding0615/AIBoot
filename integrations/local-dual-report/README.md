@@ -28,7 +28,7 @@
 - Apps Script 쪽 `installReportTrigger()`를 함께 켜면 같은 시각에 보고가 3건이 된다. 시험 기간에는 켜지 않는다.
 
 ## 설정·비밀값
-`%USERPROFILE%\.aiboot\config.json` (사용자 전용 권한, 저장소 밖): `webhookUrl`, `spreadsheetId`, `googleAuthDir`, `trialStart`, `trialEnd`, `vacations`, `holidaysExtra`, `workdaysExtra`, `contractsSpreadsheetId`, `opsSpreadsheetId`(AD_운영 관리: 복지 적용일·법인차량 보험), `trainingSpreadsheetId`(HR_법정의무교육 일정표), `chatSpaces`(스페이스 ID 배열), `chatOAuthKeys`(선택: Chat 전용 OAuth 클라이언트 JSON 경로). **이 저장소에 값을 쓰지 않는다.**
+`%USERPROFILE%\.aiboot\config.json` (사용자 전용 권한, 저장소 밖): `webhookUrl`, `spreadsheetId`, `googleAuthDir`, `trialStart`, `trialEnd`, `vacations`, `holidaysExtra`, `workdaysExtra`, `contractsSpreadsheetId`, `opsSpreadsheetId`(AD_운영 관리: 복지 적용일), `trainingSpreadsheetId`(HR_법정의무교육 일정표), `chatSpaces`(스페이스 ID 배열), `chatOAuthKeys`(선택: Chat 전용 OAuth 클라이언트 JSON 경로). **이 저장소에 값을 쓰지 않는다.**
 
 ## 명령
 ```
@@ -52,5 +52,5 @@ Unregister-ScheduledTask -TaskName 'AIBoot-DualReport-*' -Confirm:$false   # 중
 
 ### 날짜 기반 정기 업무 / 누적 Chat(11-05)
 - `[MS] AD_관리비 내역` `업무!A1:D150`의 날짜·업무명·완료만으로 D-day 계산. 법정의무교육 취합일로 계산하지 않음.
-- `법인차량목록!Q5:Q40` 비고의 `재가입 완료`를 보험 갱신 확인 근거로 사용. 개인 식별정보는 수집하지 않음.
+- 차량 보험 재가입은 `계약서(DB)` C·E·I·Q열만 읽어, 종료된 `차량보험` 행의 Q열(비고) `재가입 완료`를 근거로 사용(다른 시트는 확인하지 않음). 개인 식별정보는 수집하지 않음.
 - Google Chat: 직전 실제 영업일 또는 마지막 정기 보고 성공일부터 누적 조회. 이 기능은 실제 사용자 메시지 읽음 상태 추적이 아니라 **보고 누락 방지용 누적 수집**임. API 미활성화 상태에서는 동작하지 않음.
