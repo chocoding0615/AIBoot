@@ -541,7 +541,7 @@ function fieldGroups(lines) {
   }
   return groups;
 }
-/** Validated chat text → four cards (요약 / 오늘 완료 / 오늘 남은 일 / 다음 업무). */
+/** Validated chat text → three cards (요약 / 오늘 완료+오늘 남은 일 / 다음 업무). */
 function toCards(chat, title, footer) {
   const blocks = [[]];
   for (const l of chat.split('\n')) l.trim() === SEP ? blocks.push([]) : blocks[blocks.length - 1].push(l);
@@ -563,9 +563,12 @@ function toCards(chat, title, footer) {
       }));
     }
     if (i === 3 && footer) sections.push({ widgets: [para(`<font color="#80868b">${esc(footer)}</font>`)] });
-    return { cardId: `aiboot-${i + 1}`, card: { header: { title: heading.trim(), ...(i === 0 ? { subtitle: title } : {}) }, sections } };
+    return { card: { header: { title: heading.trim(), ...(i === 0 ? { subtitle: title } : {}) }, sections } };
   });
-  return cards;
+  // 오늘 완료 + 오늘 남은 일 share one card; the second heading stays visible as its own bold section.
+  const [summary, done, remaining, next] = cards;
+  done.card.sections.push({ widgets: [para(`<b>${esc(remaining.card.header.title)}</b>`)] }, ...remaining.card.sections);
+  return [summary, done, next].map((c, i) => ({ cardId: `aiboot-${i + 1}`, ...c }));
 }
 /** Plain text recovered from cards, used to prove nothing was dropped or reordered. */
 function cardsText(cards) {
