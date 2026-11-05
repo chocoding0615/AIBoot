@@ -428,7 +428,7 @@ function validate(chat, f) {
       const order = tags.map(t => FIELDS.indexOf(t));
       if (order.some((v, j) => j && v <= order[j - 1])) errs.push(`${h[i]}: 분야 순서/중복 오류`);
       if (i === 2) {
-        if (REMAINING_FIELDS.some((t, j) => tags[j] !== t) || tags.length > 5) errs.push(`${h[i]}: ${REMAINING_FIELDS.join('→')} 4개 분야를 모두 표시해야 함`);
+        if (REMAINING_FIELDS.some((t, j) => tags[j] !== t) || tags.length > FIELDS.length) errs.push(`${h[i]}: ${REMAINING_FIELDS.join('→')} 4개 분야를 모두 표시해야 함`);
         const items = {};
         let cur = null;
         for (const l of block) {
