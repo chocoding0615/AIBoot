@@ -28,7 +28,7 @@ const SLOTS = {
   afternoon: { start: '16:00', end: '17:30', label: '오후 업무보고' }
 };
 const AGENTS = { codex: '[Codex]', antigravity: '[Antigravity]' };
-const TEST_TAGS = { latest: () => '최신 기준 테스트', space: date => `${date.slice(5).replace('-', '/')} 스페이스 연동 테스트` };
+const TEST_TAGS = { latest: () => '최신 기준 테스트', cards: () => '카드형 테스트', space: date => `${date.slice(5).replace('-', '/')} 스페이스 연동 테스트` };
 // Chat spaces are reference material only: read-only scopes, separate token, nothing is posted there.
 const CHAT_TOKEN = path.join(HOME, 'chat-token.json');
 const CHAT_SCOPES = ['https://www.googleapis.com/auth/chat.messages.readonly', 'https://www.googleapis.com/auth/chat.spaces.readonly'];
@@ -528,16 +528,69 @@ async function generate(agent, text) {
   } finally { fs.rmSync(work, { recursive: true, force: true }); }
 }
 
+/* ---------- Cards V2 rendering (presentation only: the validated text is carried over verbatim) ---------- */
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const para = html => ({ textParagraph: { text: html } });
+const FIELD_RE = /^\s*\[[^\]]+\]\s*$/;
+/** Lines grouped under [분야] tags; lines before the first tag form an untitled group. */
+function fieldGroups(lines) {
+  const groups = [];
+  for (const l of lines) {
+    if (FIELD_RE.test(l)) groups.push({ header: l.trim(), lines: [] });
+    else { if (!groups.length) groups.push({ header: '', lines: [] }); groups[groups.length - 1].lines.push(l); }
+  }
+  return groups;
+}
+/** Validated chat text → four cards (요약 / 오늘 완료 / 오늘 남은 일 / 다음 업무). */
+function toCards(chat, title, footer) {
+  const blocks = [[]];
+  for (const l of chat.split('\n')) l.trim() === SEP ? blocks.push([]) : blocks[blocks.length - 1].push(l);
+  if (blocks.length !== 4) throw new Error(`cards: expected 4 blocks, got ${blocks.length}`);
+  const cards = blocks.map((b, i) => {
+    const [heading, ...body] = b;
+    let sections;
+    if (i === 0) {
+      // One section per summary item: title / ■ 내용 / □ 추천 each as its own paragraph (spacing via sections).
+      const items = [];
+      for (const l of body) (/^\s*\d+\.\s/.test(l) || !items.length ? items.push([l]) : items[items.length - 1].push(l));
+      sections = items.map(it => ({
+        widgets: it.map((l, j) => para(j === 0 ? `<b>${esc(l.trim())}</b>` : esc(l.trim())))
+      }));
+    } else {
+      sections = fieldGroups(body).map(g => ({
+        ...(g.header ? { header: esc(g.header) } : {}),
+        widgets: [para(g.lines.map(l => esc(l.trim())).join('<br><br>'))]
+      }));
+    }
+    if (i === 3 && footer) sections.push({ widgets: [para(`<font color="#80868b">${esc(footer)}</font>`)] });
+    return { cardId: `aiboot-${i + 1}`, card: { header: { title: heading.trim(), ...(i === 0 ? { subtitle: title } : {}) }, sections } };
+  });
+  return cards;
+}
+/** Plain text recovered from cards, used to prove nothing was dropped or reordered. */
+function cardsText(cards) {
+  const dec = s => s.replace(/<br>/g, '\n').replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  return cards.flatMap(c => [c.card.header.title, ...c.card.sections.flatMap(s => [s.header ? dec(s.header) : null,
+    ...s.widgets.map(w => dec(w.textParagraph.text))])]).filter(Boolean).join('\n').split('\n').map(x => x.trim()).filter(Boolean);
+}
+function assertSameContent(chat, cards) {
+  const want = chat.split('\n').map(l => l.trim()).filter(l => l && l !== SEP);
+  const got = cardsText(cards);
+  let k = 0;
+  for (const l of got) if (l === want[k]) k++;
+  if (k !== want.length) throw new Error(`cards: content mismatch at line ${k + 1}: "${want[k]}"`);
+}
+
 /* ---------- webhook (outbound only) ---------- */
-async function post(url, text) {
+async function post(url, body) {
   let res;
   try {
-    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json; charset=UTF-8' }, body: JSON.stringify({ text }) });
+    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json; charset=UTF-8' }, body: JSON.stringify(body) });
   } catch { throw new Error('webhook network error'); } // never surface the URL
   if (!res.ok) throw new Error('webhook HTTP ' + res.status);
   const j = await res.json().catch(() => ({}));
   if (!j.name) throw new Error('webhook response without message name');
-  return j.name.split('/').pop(); // message id only
+  return { id: j.name.split('/').pop(), cards: (j.cardsV2 || []).length }; // message id only
 }
 
 /* ---------- main ---------- */
@@ -579,8 +632,8 @@ async function main() {
     if (claimed !== true) return log(`skip ${key}: ledger=${claimed}`);
     const t0 = Date.now();
     try {
-      // --from-report re-validates a saved answer without calling the agent (dry-run only).
-      const raw = dry && args['from-report'] ? fs.readFileSync(path.join(REPORT_DIR, `${date}-${slot}-${agent}-${args['from-report']}.md`), 'utf8')
+      // --from-report re-sends a saved answer without calling the agent (dry-run or test only; still fully validated).
+      const raw = (dry || test) && args['from-report'] ? fs.readFileSync(path.join(REPORT_DIR, `${date}-${slot}-${agent}-${args['from-report']}.md`), 'utf8')
         : await generate(agent, text);
       if (/chat\.googleapis\.com|key=AIza|token=/.test(raw)) throw new Error('output contains secret-like text; not sent');
       // Full analysis stays on this PC only (internal record); Chat gets the validated short part.
@@ -589,12 +642,24 @@ async function main() {
         `snapshot ${hash}\n\n${raw}\n`);
       const { chat } = splitReport(raw, f);
       const title = `${AGENTS[agent]} ${tag ? '[' + TEST_TAGS[tag](date) + '] ' : test ? '[테스트] ' : ''}[AIBoot] ${SLOTS[slot].label} (${date.slice(5).replace('-', '/')})`;
-      const msg = `*${title}*\n${chat}\n\n_확인 불가(미연결): ${unconnected.join(' · ')}_`;
-      if (dry) return log(`dry-run ${key} ok chat=${chat.length} chars in ${Date.now() - t0}ms\n${msg}`);
+      const footer = `확인 불가(미연결): ${unconnected.join(' · ')}`;
+      const msg = `*${title}*\n${chat}\n\n_${footer}_`;
+      const cards = toCards(chat, title, footer);
+      assertSameContent(chat, cards); // never send a card that lost or reordered a line
+      if (dry) return log(`dry-run ${key} ok chat=${chat.length} chars cards=${cards.length} in ${Date.now() - t0}ms\n${msg}` +
+        (args['show-cards'] ? '\n' + JSON.stringify({ text: `*${title}*`, cardsV2: cards }, null, 1) : ''));
       updateLedger(key, { status: 'sending' });
-      const id = await post(c.webhookUrl, msg);
-      updateLedger(key, { status: 'sent', messageId: id, snapshot: hash });
-      log(`sent ${key} messageId=${id} ${Date.now() - t0}ms`);
+      let r;
+      try {
+        r = await post(c.webhookUrl, { text: `*${title}*`, cardsV2: cards });
+      } catch (e) {
+        if (e.message !== 'webhook HTTP 400') throw e;
+        // 400 = rejected, nothing was created: fall back to the same content as plain text.
+        log(`cards rejected for ${key}; sending text fallback`);
+        r = await post(c.webhookUrl, { text: msg });
+      }
+      updateLedger(key, { status: 'sent', messageId: r.id, snapshot: hash, cards: r.cards });
+      log(`sent ${key} messageId=${r.id} cards=${r.cards} ${Date.now() - t0}ms`);
     } catch (e) {
       const st = readLedger()[key]?.status;
       // 'sending' that failed with a definite HTTP/network error is safe to mark failed; unknown stays 'sending'.
