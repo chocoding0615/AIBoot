@@ -28,7 +28,12 @@ const SLOTS = {
   afternoon: { start: '16:00', end: '17:30', label: '오후 업무보고' }
 };
 const AGENTS = { codex: '[Codex]', antigravity: '[Antigravity]' };
-const TEST_TAGS = { latest: '최신 기준 테스트' };
+const TEST_TAGS = { latest: () => '최신 기준 테스트', space: date => `${date.slice(5).replace('-', '/')} 스페이스 연동 테스트` };
+// Chat spaces are reference material only: read-only scopes, separate token, nothing is posted there.
+const CHAT_TOKEN = path.join(HOME, 'chat-token.json');
+const CHAT_SCOPES = ['https://www.googleapis.com/auth/chat.messages.readonly', 'https://www.googleapis.com/auth/chat.spaces.readonly'];
+const CHAT_LOOKBACK_DAYS = 7;
+const CHAT_TEXT_MAX = 16000;
 const HOLIDAY_ICS = 'https://calendar.google.com/calendar/ical/ko.south_korea.official%23holiday%40group.v.calendar.google.com/public/basic.ics';
 const AGENT_TIMEOUT_MS = 10 * 60 * 1000;
 const CHAT_MAX = 2000; // Chat body limit; a report over this is not sent
@@ -126,7 +131,9 @@ async function workday(ymd, c) {
 const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..', '..');
 const RULE_FILES = ['CURRENT.md', 'docs/FIXED-EXPENSES-V1.md'];
 const rules = () => RULE_FILES.map(f => `### ${f}\n` + fs.readFileSync(path.join(REPO, f), 'utf8')).join('\n\n');
-const FIELDS = ['[고정비]', '[복지]', '[계약서]', '[라이센스]', '[기타 업무]'];
+const FIELDS = ['[고정비]', '[계약서]', '[라이센스]', '[복지]', '[기타 업무]'];
+const REMAINING_FIELDS = FIELDS.slice(0, 4); // always shown under 오늘 남은 일
+const IMMINENT_DAYS = 7;
 const SEP = '--------------------';
 const D_BUCKETS = [['D-7', 0, 7], ['D-30', 8, 30], ['D-60', 31, 60]];
 const bucketOf = d => (D_BUCKETS.find(([, lo, hi]) => d >= lo && d <= hi) || [null])[0];
@@ -154,14 +161,87 @@ function fixedSchedule(date) {
 }
 
 /* ---------- read-only snapshot ---------- */
-function sheetsClient(c) {
+function oauth(c, creds) {
   const require = createRequire(path.join(c.googleAuthDir, 'package.json'));
   const { google } = require('googleapis');
   const keys = JSON.parse(fs.readFileSync(path.join(c.googleAuthDir, 'dist/gcp-oauth.keys.json'), 'utf8'));
   const k = keys.installed || keys.web;
   const auth = new google.auth.OAuth2(k.client_id, k.client_secret, (k.redirect_uris || [])[0]);
-  auth.setCredentials(JSON.parse(fs.readFileSync(path.join(c.googleAuthDir, 'dist/.gsheets-server-credentials.json'), 'utf8')));
+  if (creds) auth.setCredentials(creds);
+  return { google, auth };
+}
+function sheetsClient(c) {
+  const { google, auth } = oauth(c, JSON.parse(fs.readFileSync(path.join(c.googleAuthDir, 'dist/.gsheets-server-credentials.json'), 'utf8')));
   return google.sheets({ version: 'v4', auth });
+}
+
+/** One-time consent for the read-only Chat token (loopback redirect, user approves in the browser). */
+async function authChat(c) {
+  const http = await import('node:http');
+  const server = http.createServer();
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const redirect = `http://127.0.0.1:${server.address().port}`;
+  const { auth } = oauth(c);
+  const url = auth.generateAuthUrl({ access_type: 'offline', prompt: 'consent', scope: CHAT_SCOPES, redirect_uri: redirect,
+    ...(typeof args.account === 'string' ? { login_hint: args.account } : {}) });
+  spawn('rundll32', ['url.dll,FileProtocolHandler', url], { detached: true, stdio: 'ignore' }).unref();
+  console.log('브라우저에서 회사 계정으로 읽기 전용 권한을 승인하세요. 열리지 않으면 이 주소를 여세요:\n' + url);
+  const code = await new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('승인 대기 시간 초과(10분)')), 10 * 60 * 1000);
+    server.on('request', (req, res) => {
+      const q = new URL(req.url, redirect).searchParams;
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(q.get('code') ? 'AIBoot: 승인 완료. 이 창을 닫아도 됩니다.' : 'AIBoot: 승인되지 않았습니다.');
+      if (q.get('code') || q.get('error')) { clearTimeout(t); q.get('code') ? resolve(q.get('code')) : reject(new Error('승인 거부: ' + q.get('error'))); }
+    });
+  });
+  server.close();
+  const { tokens } = await auth.getToken({ code, redirect_uri: redirect });
+  const granted = String(tokens.scope || '').split(' ');
+  const missing = CHAT_SCOPES.filter(s => !granted.includes(s));
+  if (missing.length) throw new Error('일부 권한 미승인: ' + missing.join(', '));
+  fs.writeFileSync(CHAT_TOKEN, JSON.stringify(tokens), { mode: 0o600 });
+  log('chat read-only token saved (scopes: ' + granted.filter(s => /chat/.test(s)).join(' ') + ')');
+}
+
+/** Recent messages from the configured spaces (read-only). Never claims a read that failed. */
+async function chatSnapshot(c, date) {
+  const ids = c.chatSpaces || [];
+  if (!ids.length) return { status: '미설정', text: '' };
+  if (!fs.existsSync(CHAT_TOKEN)) return { status: '미연결(읽기 권한 미승인)', text: '' };
+  const { google, auth } = oauth(c, JSON.parse(fs.readFileSync(CHAT_TOKEN, 'utf8')));
+  const chat = google.chat({ version: 'v1', auth });
+  const since = new Date(Date.parse(addDay(date, -CHAT_LOOKBACK_DAYS) + 'T00:00:00+09:00')).toISOString();
+  const out = [], failed = [];
+  for (const id of ids) {
+    try {
+      let name = id;
+      try { name = (await chat.spaces.get({ name: 'spaces/' + id })).data.displayName || id; } catch {}
+      const msgs = [];
+      let pageToken;
+      do {
+        const r = await chat.spaces.messages.list({ parent: 'spaces/' + id, filter: `createTime > "${since}"`, orderBy: 'createTime asc', pageSize: 200, pageToken });
+        msgs.push(...(r.data.messages || []));
+        pageToken = r.data.nextPageToken;
+      } while (pageToken && msgs.length < 600);
+      out.push(`## ${name} (최근 ${CHAT_LOOKBACK_DAYS}일 ${msgs.length}건, 시각은 KST)`);
+      for (const m of msgs) {
+        const t = stripPersonal(String(m.text || '').replace(/\s+/g, ' ').trim());
+        if (t.length < 4) continue;
+        const when = kst(new Date(m.createTime), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+        const who = m.sender?.displayName || '작성자' + String(m.sender?.name || '').slice(-4);
+        const reply = m.threadReply ? ' (답글)' : '';
+        out.push(`- [${when}] ${who}${reply}: ${t.slice(0, 400)}`);
+      }
+    } catch (e) {
+      failed.push(id);
+      log(`chat read failed ${id}: ${e.response?.data?.error?.status || ''} ${e.response?.data?.error?.message || e.message}`.slice(0, 300));
+    }
+  }
+  let text = out.join('\n');
+  if (text.length > CHAT_TEXT_MAX) text = '(앞부분 생략)\n' + text.slice(-CHAT_TEXT_MAX);
+  const status = !failed.length ? '연결' : failed.length === ids.length ? '조회 실패' : `일부 조회 실패(${failed.length}/${ids.length})`;
+  return { status, text };
 }
 const stripPersonal = s => String(s).replace(/01[016789]-?\d{3,4}-?\d{4}/g, '<전화번호 생략>');
 /** @return {{text:string, sources:object, contracts:object[], licenses:object[]}} */
@@ -218,8 +298,9 @@ async function snapshot(c) {
   sources['복지 원본'] = '미사용(직원 개인정보 포함 — 입력 제외)';
   sources['회사 Gmail'] = '미연결';
   sources['회사 자체 캘린더'] = '미연결';
-  sources['Chat 지정 스페이스 5개'] = '미연결';
-  return { text: out.join('\n'), sources, contracts, licenses };
+  const ch = await chatSnapshot(c, today());
+  sources['지정 Chat 스페이스 2개'] = ch.status;
+  return { text: out.join('\n'), sources, contracts, licenses, chatText: ch.status === '연결' || /^일부/.test(ch.status) ? ch.text : '' };
 }
 
 /** Facts computed in code so both agents receive identical dates (no date arithmetic left to the model). */
@@ -233,14 +314,29 @@ async function facts(date, c, snap) {
     : dow === 5 && next === addDay(date, 3) ? `다음주 월요일 업무 (${mmdd})`
     : `다음 근무일 업무 (${mmdd})`;
   const sched = fixedSchedule(date);
+  // Imminent window (today..today+7): only these dated fixed-cost items may appear under 오늘 남은 일.
+  const windowDates = Array.from({ length: IMMINENT_DAYS + 1 }, (_, i) => addDay(date, i));
+  const imminent = [];
+  for (const d of windowDates) {
+    const [y, m, dd] = d.split('-').map(Number);
+    for (const s of fixedSchedule(d)) {
+      if (s.day === dd && !imminent.some(x => x.vendor === s.vendor)) imminent.push({ ...s, date: d });
+    }
+  }
+  const imminentDays = windowDates.map(d => Number(d.slice(8)));
+  const undated = sched.filter(s => !s.day).map(s => s.vendor);
   const byBucket = list => D_BUCKETS.map(([b]) => `${b}: ` + (list.filter(x => x.bucket === b).map(x => `${x.name}${x.what ? '(' + x.what + ')' : ''} 종료 ${x.end} D-${x.d}${x.autoRenew ? ' 자동연장' : ''}`).join(' / ') || '없음')).join('\n');
   const text = [
     `오늘 ${date}(${['일', '월', '화', '수', '목', '금', '토'][dow]}): ${wd.ok ? '근무일' : '휴무(' + wd.reason + ')'}${wd.warning ? ' / ' + wd.warning : ''}`,
     `다음 근무일: ${next} → 마지막 대분류 제목은 정확히 "${nextHeading}"`,
     `휴일 결제일 이동 규칙: 미확정 — 예정일을 옮기지 말 것`,
     '',
-    `[고정비 이번 달 규칙상 예정일] (FIXED-EXPENSES-V1 표에서 계산, 실제 고지서·납부와 다를 수 있음)`,
-    ...sched.map(s => `- ${s.vendor}: ${s.day ? date.slice(5, 7) + '/' + String(s.day).padStart(2, '0') : '고지서 인출예정일 확인'} (${s.basis})`),
+    `[고정비 임박 예정 — ${date.slice(5)}~${windowDates[IMMINENT_DAYS].slice(5)}] 오늘 남은 일 [고정비]에는 이 목록 중 실제 미처리 항목만 넣는다`,
+    ...(imminent.length ? imminent.map(s => `- ${s.vendor}: ${s.date.slice(5).replace('-', '/')} (${s.basis})`) : ['- 없음']),
+    '',
+    `[고정비 이번 달 규칙상 예정일 — 참고용, 임박이 아니면 오늘 남은 일에 넣지 말 것] (FIXED-EXPENSES-V1 표에서 계산, 실제 고지서·납부와 다를 수 있음)`,
+    ...sched.filter(s => s.day).map(s => `- ${s.vendor}: ${date.slice(5, 7)}/${String(s.day).padStart(2, '0')} (${s.basis})`),
+    `- 예정일 미확정(${undated.join('·') || '없음'}): 시트나 스페이스 메시지에 구체 근거가 없으면 보고하지 말 것`,
     '',
     `[계약서 — 계약 종료일 기준 D-구간, 계약종료 처리된 건 제외]`, byBucket(snap.contracts),
     '',
@@ -248,7 +344,7 @@ async function facts(date, c, snap) {
     '',
     `[자료 연결 상태] ` + Object.entries(snap.sources).map(([k, v]) => `${k}: ${v}`).join(' / ')
   ].join('\n');
-  return { text, nextHeading, sched };
+  return { text, nextHeading, sched, imminentDays, undated, sources: snap.sources, chatText: snap.chatText };
 }
 
 /* ---------- independent agent runs ---------- */
@@ -260,7 +356,8 @@ function prompt(slot, date, snap, f) {
   return [
     '이 작업은 도구가 필요 없다. 명령 실행·파일 읽기·날짜 확인을 시도하지 말고(권한이 없어 실패한다) 필요한 모든 자료가 아래에 있으니 바로 최종 답을 출력하라.',
     `너는 (주)제이피프로페셔널 경영지원 담당자의 AI 비서다. 오늘은 ${date}(한국시간)이고 ${SLOTS[slot].label}를 쓴다.`,
-    '도구·파일·명령을 쓰지 말고 아래 [운영 기준], [계산된 사실], [시트 스냅샷]만 근거로 판단하라. 다른 AI의 보고서는 존재하지 않는 것으로 간주한다.',
+    '도구·파일·명령을 쓰지 말고 아래 [운영 기준], [계산된 사실], [시트 스냅샷], [Chat 스페이스 메시지]만 근거로 판단하라. 다른 AI의 보고서는 존재하지 않는 것으로 간주한다.',
+    '[Chat 스페이스 메시지]에서는 업무 공지·결정, 진행 상태 변경, 오늘 처리할 일·미해결 이슈, 다가오는 일정·마감, 사전 준비 사항만 쓴다. 잡담·인사·중복은 버린다. 시트 자료와 교차 확인해 같은 업무는 하나로 합치고, 메시지에만 있는 업무는 해당 분야 또는 [기타 업무]에 넣는다.',
     '[운영 기준]이 유일한 기준이다. 특히 "2026-11-04 사용자 확인·오류 재발 방지" 항목을 반드시 지켜라(완료 단계 재요청 금지, 근거 없는 불일치·미납·업무 생성 금지).',
     '날짜는 [계산된 사실]의 값만 쓴다. 직접 날짜를 계산하거나 새 일정을 만들지 마라. 연결 상태가 "미연결/미사용"인 자료의 내용은 쓰지 마라.',
     '',
@@ -268,20 +365,24 @@ function prompt(slot, date, snap, f) {
     CHAT_MARK,
     '구글 챗에 그대로 보낼 보고 본문(제목 줄은 쓰지 말 것 — 시스템이 붙인다). 아래 순서·형식을 정확히 지킨다:',
     `${h[0]}`,
-    '1) … (중요도 높은 1~3건. 관련 일정·업무를 하나로 묶고 사실과 권고를 구분)',
+    '1. 업무 제목',
+    '■ 내용: 확인된 현황 및 일정',
+    '□ 추천: 필요한 사전 조치',
+    '(중요도 높은 1~3건. 관련 일정·업무는 한 항목으로 합친다. 제목·■ 내용·□ 추천은 반드시 각각 줄을 바꾼다. "사실:"·"권고:" 표현 금지)',
     SEP,
     `${h[1]}`,
     '[분야]',
     '- …',
     SEP,
     `${h[2]}`,
-    '[분야]',
-    '- …',
+    REMAINING_FIELDS[0], '- …', REMAINING_FIELDS[1], '- …', REMAINING_FIELDS[2], '- …', REMAINING_FIELDS[3], '- …',
     SEP,
     `${h[3]}`,
     '[분야]',
     '- …',
-    `- 분야 태그는 ${FIELDS.join(' → ')} 순서, 대상 없는 분야는 생략. 대분류에 내용이 없으면 "- 해당 없음" 한 줄.`,
+    `- 분야 태그는 ${FIELDS.join(' → ')} 순서. "${h[2]}"에는 ${REMAINING_FIELDS.join(' → ')} 4개를 항상 표시하고 업무가 없으면 "- 해당 없음", 스페이스 메시지 등 그 밖의 업무가 있을 때만 마지막에 [기타 업무]를 추가한다. 다른 대분류에서는 대상 없는 분야를 생략하고, 내용이 없으면 "- 해당 없음" 한 줄.`,
+    `- "${h[2]}"에는 임박 업무와 실제 미처리 사항만 넣는다. [고정비]는 [계산된 사실]의 "고정비 임박 예정" 목록에서만 고른다. 예정일 미확정 업체는 구체 근거 없이 반복하지 않는다.`,
+    `- 자료 연결 상태가 "연결"이 아닌 분야(예: 복지)는 "- 확인 불가(원본 미연결)"로 쓰고 "해당 없음"으로 단정하지 않는다.`,
     '- 날짜 업무는 "N일 납부: 업체A·업체B — 처리 내용" 꼴, 날짜 오름차순, 같은 날짜·같은 처리는 한 줄로 묶음. 날짜 없는 업무는 분야 마지막.',
     '- [계약서]·[라이센스]는 D-7 → D-30 → D-60 순서로 "- D-30 n건 (대상 요약)" 꼴.',
     '- 오늘 새로 확인된 완료가 없으면 오늘 완료에 "- 오늘 새로 확인된 완료 없음". 전자결재 완료 ≠ 지급 완료.',
@@ -292,7 +393,8 @@ function prompt(slot, date, snap, f) {
     '',
     '[운영 기준]', rules(),
     '', '[계산된 사실]', f.text,
-    '', '[시트 스냅샷]', snap.text
+    '', '[시트 스냅샷]', snap.text,
+    '', '[Chat 스페이스 메시지]', snap.chatText || `(${snap.sources['지정 Chat 스페이스 2개']} — 메시지 내용을 쓰지 말 것)`
   ].join('\n');
 }
 
@@ -308,24 +410,50 @@ function validate(chat, f) {
     if (idx[0] !== 0) errs.push('본문이 "내용 요약 및 추천"으로 시작하지 않음');
     for (let i = 1; i < 4; i++) if ((lines[idx[i] - 1] || '').trim() !== SEP) errs.push(`"${h[i]}" 앞 실선 누락`);
     if (lines.filter(l => l.trim() === SEP).length !== 3) errs.push('실선은 대분류 사이 3개여야 함');
-    const summary = lines.slice(1, idx[1] - 1).filter(l => /^\s*\d\)/.test(l));
-    if (summary.length < 1 || summary.length > 3) errs.push(`요약 항목 ${summary.length}건(1~3건이어야 함)`);
+    // Summary: "N. 제목" → "■ 내용:" → "□ 추천:" on separate lines, 1–3 items.
+    const sumBlock = lines.slice(1, idx[1] - 1).map(l => l.trim());
+    const starts = sumBlock.map((l, j) => /^\d+\.\s+\S/.test(l) ? j : -1).filter(j => j >= 0);
+    if (starts.length < 1 || starts.length > 3) errs.push(`요약 항목 ${starts.length}건(1~3건이어야 함)`);
+    if (starts[0] !== 0) errs.push('요약은 "1. 업무 제목"으로 시작해야 함');
+    starts.forEach((s, j) => {
+      const item = sumBlock.slice(s + 1, starts[j + 1]);
+      const ci = item.findIndex(l => l.startsWith('■ 내용:')), ri = item.findIndex(l => l.startsWith('□ 추천:'));
+      if (ci < 0 || ri < 0 || ri < ci) errs.push(`요약 ${j + 1}번: "■ 내용:" 다음 줄에 "□ 추천:" 형식 아님`);
+    });
+    if (/사실\s*:|권고\s*:/.test(chat)) errs.push('"사실:"/"권고:" 표현 사용');
     for (let i = 1; i < 4; i++) {
       const block = lines.slice(idx[i] + 1, i < 3 ? idx[i + 1] - 1 : undefined);
       const tags = block.filter(l => /^\s*\[[^\]]+\]\s*$/.test(l)).map(l => l.trim());
       if (tags.some(t => !FIELDS.includes(t))) errs.push(`${h[i]}: 허용되지 않은 분야 ${tags.filter(t => !FIELDS.includes(t)).join(',')}`);
       const order = tags.map(t => FIELDS.indexOf(t));
       if (order.some((v, j) => j && v <= order[j - 1])) errs.push(`${h[i]}: 분야 순서/중복 오류`);
-      let field = null, lastDay = 0, undated = false, lastBucket = -1;
+      if (i === 2) {
+        if (REMAINING_FIELDS.some((t, j) => tags[j] !== t) || tags.length > 5) errs.push(`${h[i]}: ${REMAINING_FIELDS.join('→')} 4개 분야를 모두 표시해야 함`);
+        const items = {};
+        let cur = null;
+        for (const l of block) {
+          if (/^\s*\[[^\]]+\]\s*$/.test(l)) { cur = l.trim(); items[cur] = []; } else if (cur && /^\s*-/.test(l)) items[cur].push(l);
+        }
+        for (const t of tags) if (!items[t]?.length) errs.push(`${h[i]} ${t}: 항목 없음("- 해당 없음" 필요)`);
+        if (f.sources?.['복지 원본'] !== '연결' && (items['[복지]'] || []).some(l => !/확인 불가/.test(l))) errs.push(`${h[i]} [복지]: 미연결 자료는 "확인 불가"로 표시`);
+      }
+      let field = null, lastDay = -1, undated = false, lastBucket = -1;
       for (const l of block) {
-        if (/^\s*\[[^\]]+\]\s*$/.test(l)) { field = l.trim(); lastDay = 0; undated = false; lastBucket = -1; continue; }
+        if (/^\s*\[[^\]]+\]\s*$/.test(l)) { field = l.trim(); lastDay = -1; undated = false; lastBucket = -1; continue; }
         if (field === '[고정비]') {
           const d = /^\s*-\s*(?:\d{1,2}\/)?(\d{1,2})일?/.exec(l);
           if (d && /^\s*-\s*\d/.test(l)) {
+            const day = Number(d[1]);
+            // Under 오늘 남은 일, order by position in the imminent window (handles month wrap).
+            const ord = i === 2 ? f.imminentDays.indexOf(day) : day;
+            if (i === 2 && ord < 0) errs.push(`${h[i]} [고정비]: 임박(7일 이내) 아님 "${l.trim()}"`);
             if (undated) errs.push(`${h[i]} [고정비]: 날짜 없는 업무 뒤에 날짜 업무`);
-            if (Number(d[1]) < lastDay) errs.push(`${h[i]} [고정비]: 날짜 오름차순 아님`);
-            lastDay = Number(d[1]);
+            if (ord < lastDay) errs.push(`${h[i]} [고정비]: 날짜 오름차순 아님`);
+            lastDay = ord;
           } else if (/^\s*-/.test(l) && !/해당 없음|완료 없음/.test(l)) undated = true;
+          if (i === 2) for (const v of f.undated) {
+            if (norm(l).includes(norm(v)) && !norm(f.chatText || '').includes(norm(v))) errs.push(`${h[i]}: 예정일 미확정 ${v} 근거 없이 반복`);
+          }
         }
         if (field === '[계약서]' || field === '[라이센스]') {
           const b = /D-(7|30|60)\b/.exec(l);
@@ -349,7 +477,10 @@ function validate(chat, f) {
   if (/생각공장[^\n]*(불일치|미납|재확인)/.test(chat)) errs.push('생각공장 근거 없는 불일치/재확인');
   if (/미납(?!\S*\s*(?:판단|단정|으로 보지|아님))/.test(chat)) errs.push('"미납" 단정 표현');
   if (/이지화물/.test(chat)) errs.push('비활성 업체(이지화물) 포함');
-  if (/(Gmail|메일함|캘린더|스페이스)[^\n]*(확인됨|수신됨|에 따르면)/.test(chat)) errs.push('미연결 자료를 본 것처럼 기술');
+  // No yellow cell ≠ not processed: the sheet cannot prove an expense report is missing.
+  if (/(지출결의|결의|결재)[^\n]*(미작성|미제출|미처리)\s*(상태|입니다|임)?/.test(chat)) errs.push('연노랑 없음을 미작성·미처리로 단정');
+  const unread = f.chatText ? 'Gmail|메일함|캘린더' : 'Gmail|메일함|캘린더|스페이스|채팅방';
+  if (new RegExp(`(${unread})[^\\n]*(확인됨|수신됨|에 따르면|공지)`).test(chat)) errs.push('미연결 자료를 본 것처럼 기술');
   if (chat.length > CHAT_MAX) errs.push(`길이 초과 ${chat.length}>${CHAT_MAX}`);
   return [...new Set(errs)];
 }
@@ -411,6 +542,11 @@ async function post(url, text) {
 
 /* ---------- main ---------- */
 async function main() {
+  if (args['auth-chat']) return authChat(cfg());
+  if (args['check-chat']) {
+    const s = await chatSnapshot(cfg(), today());
+    return log(`chat check: ${s.status} lines=${s.text ? s.text.split('\n').length : 0}`);
+  }
   const slot = args.slot;
   if (!SLOTS[slot]) throw new Error('--slot morning|afternoon');
   const agents = !args.agent || args.agent === 'both' ? Object.keys(AGENTS) : [args.agent];
@@ -452,7 +588,7 @@ async function main() {
       if (!args['from-report']) fs.writeFileSync(path.join(REPORT_DIR, `${date}-${slot}-${agent}${test ? '-test' + (tag ? '-' + tag : '') : ''}${dry ? '-preview' : ''}.md`),
         `snapshot ${hash}\n\n${raw}\n`);
       const { chat } = splitReport(raw, f);
-      const title = `${AGENTS[agent]} ${tag ? '[' + TEST_TAGS[tag] + '] ' : test ? '[테스트] ' : ''}[AIBoot] ${SLOTS[slot].label} (${date.slice(5).replace('-', '/')})`;
+      const title = `${AGENTS[agent]} ${tag ? '[' + TEST_TAGS[tag](date) + '] ' : test ? '[테스트] ' : ''}[AIBoot] ${SLOTS[slot].label} (${date.slice(5).replace('-', '/')})`;
       const msg = `*${title}*\n${chat}\n\n_확인 불가(미연결): ${unconnected.join(' · ')}_`;
       if (dry) return log(`dry-run ${key} ok chat=${chat.length} chars in ${Date.now() - t0}ms\n${msg}`);
       updateLedger(key, { status: 'sending' });
