@@ -33,3 +33,12 @@ test('다른 업체 및 종료 업체는 기존 로직 유지',()=>{
   assert.equal(due('2026-11-01','알고퀵'),10);
   assert.equal(fn('2026-11-01').find(x=>x.vendor==='이지화물'),undefined);
 });
+test('실제 운영 기준 문서(FIXED-EXPENSES-V1)로도 같은 결과',()=>{
+  const real=vm.runInNewContext('('+match[0]+')',{fs,path,REPO:new URL('../../..',import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1')});
+  const day=(d,v)=>real(d).find(x=>x.vendor===v)?.day??null;
+  assert.equal(real('2026-11-01').length,22); // 이지화물 종료 → 활성 22항목
+  assert.equal(day('2026-11-01','수유 수도요금'),30);
+  assert.equal(day('2026-12-01','수유 수도요금'),null);
+  assert.equal(day('2026-11-01','매장 안전관리자'),null);
+  assert.ok(real('2026-11-01').some(x=>x.vendor==='매장 안전관리자')); // 항목은 유지(납부일만 미확정)
+});
