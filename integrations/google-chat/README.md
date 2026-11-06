@@ -2,8 +2,16 @@
 
 - **역할 (2026-11-05 사용자 결정):** Chat 앱으로 사용자의 `완료`·`대기`·`휴가` 회신을 받아 숨김 탭 `AIBoot_데일리마감`에 **추가 기록만** 한다. 정기 09:30/16:00 보고는 [로컬 이중 보고](../local-dual-report/README.md)가 담당하며, 그 실행기가 이 탭을 읽으므로 기록이 다음 보고에 반영된다.
 - **정기 보고 발송 금지:** `installReportTrigger()`는 Script Property `REPORTS_ENABLED=true` 없이는 설치를 거부한다. 함께 켜면 같은 시각 보고가 3건이 된다. 기록 전용 운영에서는 `CHAT_WEBHOOK_URL`도 설정하지 않는다.
-- **현재 상태:** `khh@lador.co.kr` 계정에 Apps Script 프로젝트 생성·코드 반영까지만 함. Script Properties·GCP 프로젝트 연결·Chat API 설정·배포·권한 승인·메시지 테스트는 **미실시**. 추가 인증·권한 문제가 생기면 보류한다.
+- **현재 상태 (마지막 확인 2026-11-05):** 회사 계정에 Apps Script 프로젝트 생성·코드 반영까지만 함. Script Properties·GCP 프로젝트 연결·Chat API 설정·배포·권한 승인·메시지 테스트는 **미실시**. 저장소 밖 설정이라 이후 상태는 Apps Script 콘솔에서 확인해야 한다. 추가 인증·권한 문제가 생기면 보류한다.
 - 웹훅 URL, 토큰, 비밀번호 등 인증정보는 어떤 로그·GitHub 파일에도 출력하거나 저장하지 않는다. 최신 운영 기준은 [CURRENT.md](../../CURRENT.md).
+
+## 남아 있는 보고 코드
+
+`Code.gs`에는 과거 정기 발송 코드(`reportTick`, `runReport_`, `sendWebhook_`, 수동 발송 함수)가 남아 있다. 양방향 앱이 쓰는 근무일·상태 함수와 얽혀 있어 함께 보존한다. 현재 발송이 막히는 경로는 다음과 같다.
+
+- 이 코드 안에서 `reportTick` 트리거를 만드는 곳은 `installReportTrigger()`뿐이고, `REPORTS_ENABLED=true`가 없으면 거부한다.
+- 모든 발송은 `sendWebhook_()`를 거치고, `CHAT_WEBHOOK_URL`이 없으면 실패한다. 기록 전용 운영에서는 이 값을 설정하지 않는다.
+- Apps Script 편집기에서 사람이 직접 트리거를 추가하는 것은 코드로 막지 못한다. 배포 전에 트리거 목록이 비어 있는지 확인한다.
 
 ## Script Properties
 
