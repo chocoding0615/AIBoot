@@ -3,7 +3,7 @@
  * 두 번째 판정 엔진을 만들지 않기 위해 예정일·7일 창 계산은 실행기 facts()의 임박 계산과 같은 방식이다.
  *
  * 상태 3개: 정상 / 확인 필요 / 미검증. 원본 연결 성공 ≠ 정상. 제외 사유가 입증되지 않으면 정상으로 두지 않는다.
- * 다른 분야를 붙일 때도 { id, name, summary, items, inactive } 형식의 domain을 하나 더 만들면 된다.
+ * 다른 분야는 domains.mjs에서 같은 { id, name, summary, items, inactive, warnings } 형식으로 만든다.
  */
 export const ACTIVE_EXPECTED = 22;
 export const STATUS = { ok: '정상', check: '확인 필요', unverified: '미검증' };
@@ -31,19 +31,20 @@ export const vendorsIn = (text, vendors) => {
   return vendors.filter(v => [v, ...(ALIASES[v] || [])].some(n => lines.some(l => named(l, n))));
 };
 
-/** Only the report lines that count as the fixed-cost check: the [고정비] blocks. A vendor named in the summary
- *  or another field (e.g. 생각공장 주차권 under [정기 업무]) is not proof that its payment was reported. */
-export function fixedPart(chat) {
+/** Only the report lines under one field tag. A target named in the summary or another field
+ *  (e.g. 생각공장 주차권 under [정기 업무]) is not proof that it was reported in this field. */
+export function fieldPart(chat, tag) {
   const keep = [];
   let field = null;
   for (const l of String(chat).split('\n')) {
     const t = l.trim();
     if (/^-{5,}$/.test(t)) { field = null; continue; }
     if (/^\[[^\]]+\]$/.test(t)) { field = t; continue; }
-    if (field === '[고정비]') keep.push(l);
+    if (field === tag) keep.push(l);
   }
   return keep.join('\n');
 }
+export const fixedPart = chat => fieldPart(chat, '[고정비]');
 
 /** Parses the operating doc's vendor table; the row number is the source sheet row. */
 export function parseDocRows(doc) {

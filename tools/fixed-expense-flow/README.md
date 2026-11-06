@@ -1,6 +1,6 @@
-# AIBoot 연결현황 v1 (고정비 22개, 읽기 전용)
+# AIBoot 연결현황 (읽기 전용)
 
-"코웨이가 왜 보고에 없지?"를 확인하는 화면이다. 트리 `AIBoot > 고정비 > 업체 22개`에서 업체마다 원본 연결, 점검 상태, 이번 보고 포함·제외와 이유를 보여 준다. 업체를 누르면 대상 회차·점검시각·판정 이유가 나온다.
+"이 대상이 왜 보고에 없지?"를 확인하는 화면이다. 트리 `AIBoot > 고정비·계약서·라이센스·복지·정기 업무·기타 업무 > 대상`에서 대상마다 원본 연결, 점검 상태, 이번 보고 포함·제외와 이유를 보여 준다. 분야를 펼치고 대상을 누르면 대상 회차·근거·점검시각이 나온다.
 
 ## 여는 방법 (이 PC)
 
@@ -34,17 +34,33 @@ start index.html             # 브라우저로 열기(서버 불필요)
 
 주말·공휴일 예정일은 이동 규칙이 미확정이라 날짜를 옮기지 않고 참고로만 표시한다. 지역 없이 `코웨이`라고만 쓴 보고는 어느 업체인지 알 수 없어 포함으로 세지 않는다. 직전 회차의 완료 여부는 판정하지 않는다.
 
+## 다른 분야 판정
+
+대상 수는 실행기가 읽는 원본에서 매번 산출한다. 비교는 해당 분야 블록 안에서 이름 전체를 단어 경계로 찾는다.
+
+| 분야 | 보고 대상 | 정상 제외 | 확인 필요·미검증 |
+|---|---|---|---|
+| 계약서·라이센스 | 종료일 D-60 이내, 보고의 같은 구간 줄 | D-60 밖 | 이름 없이 건수만 맞음, 같은 이름 여럿: 미검증. 다른 구간 표시: 확인 필요. 종료일 경과인데 종료 표시 없음: 확인 필요. 종료일이 날짜가 아님: 미검증 |
+| 복지 | 적용일 D-7 이내, 같은 날짜와 인원수 | D-7 밖 | 인원수 다름, 적용일 없는 행: 확인 필요 |
+| 정기 업무 | 업무 탭 미완료 D+30~D-60, 종료 후 Q열 표시 없는 차량보험 | D-60 밖, Q열 재가입 완료 | 날짜 없음, D+30 초과 미완료: 확인 필요 |
+| 기타 업무 | 메시지별 판정 없음 | 없음 | 스페이스별 미검증. 메시지 ID·원문을 저장하지 않으므로 조회 성공을 정상으로 두지 않는다. 조회 실패 기록이나 읽기 커서 없음: 확인 필요 |
+
+D-구간은 실행기 `D_BUCKETS`를 그대로 읽고, 날짜는 기준 보고일로 계산한다. 원본을 못 읽으면 대상 수를 만들지 않고 해당 분야를 한 줄로 표시한다. 회사 Gmail·회사 자체 캘린더·정기 신고·점검·Chat 앱은 미연결로 표시만 하고 숫자에 넣지 않는다.
+
 ## 읽는 것 (쓰기 없음)
 
 - 저장소: `integrations/local-dual-report/runner.mjs`의 `fixedSchedule()`을 그대로 실행, `docs/FIXED-EXPENSES-V1.md`
-- `%USERPROFILE%\.aiboot`: `logs`, `ledger.json`, `reports`, `holidays.json`, `config.json`(`spreadsheetId`·`googleAuthDir`만)
-- 시트: `'JP매월 지출'!D14:D36` 업체명 열만 `values.get`으로 읽음. 금액·서식은 읽지 않음. `--no-sheet`면 원본은 미검증으로 표시
+- `%USERPROFILE%\.aiboot`: `logs`, `ledger.json`, `reports`, `holidays.json`, `config.json`(스프레드시트 ID 3개·`googleAuthDir`·`chatSpaces` 개수만)
+- 고정비 시트: `'JP매월 지출'!D14:D36` 업체명 열만 `values.get`으로 읽음. 금액·서식은 읽지 않음
+- 다른 분야: 실행기와 같은 범위를 `values.batchGet`으로 읽음. `계약서 검색`·`프로그램(2026)`·복지 A·E열·`업무!A1:D150`·`계약서(DB)` C·E·I·Q열. 결과 파일에는 `domains.mjs`의 파서가 고른 값만 남는다. 금액·개인 이름·차량번호·Q열 원문·Chat 메시지·보고 원문은 넣지 않는다
+- `--no-sheet`면 원본은 미검증으로 표시
 
 웹훅·Chat은 쓰지 않고, 시트·스케줄러·토큰을 바꾸지 않는다. 결과 파일 `evidence.local.js`는 Git에서 제외된다.
 
 ## 파일
 
-- `judge.mjs`: 판정(순수 함수). 다른 분야는 같은 `{ id, name, summary, items, inactive }` 형식의 domain을 추가한다.
+- `judge.mjs`: 고정비 판정(순수 함수)
+- `domains.mjs`: 다른 5개 분야의 행 파서와 판정(순수 함수). 결과 형식은 고정비와 같다
 - `build-evidence.mjs`: 근거 수집 후 `judge.mjs` 호출
 - `index.html`: 화면(외부 라이브러리 없음)
-- `tests/judge.test.mjs`: `node --test tools/fixed-expense-flow/tests/judge.test.mjs`
+- 테스트: `node --test tools/fixed-expense-flow/tests/judge.test.mjs tools/fixed-expense-flow/tests/domains.test.mjs`
