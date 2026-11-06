@@ -4,7 +4,7 @@
  *
  * Reads (never writes): runner.mjs and FIXED-EXPENSES-V1.md of --repo, %USERPROFILE%/.aiboot/{logs,ledger.json,
  * reports,holidays.json}, the vendor-name column ('JP매월 지출'!D14:D36) and the ranges the runner itself reads for
- * contracts, licenses, welfare, tasks and vehicle insurance. Only the fields in domains.mjs parsers go further.
+ * contracts, licenses, welfare, recurring rules and history, and vehicle insurance. Only the fields in domains.mjs parsers go further.
  * From config.json it uses spreadsheetId, contractsSpreadsheetId, opsSpreadsheetId, googleAuthDir and the number of
  * chatSpaces. No amounts, webhook, Chat API call or message text. Report text stays in memory and is never written out.
  * Writes only ./evidence.local.js (git-ignored, this PC only).
@@ -16,7 +16,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fieldPart, fixedPart, judgeFixed, parseDocRows, vendorsIn } from './judge.mjs';
-import { judgeChat, judgeContracts, judgeLicenses, judgeRecurring, judgeWelfare, parseContracts, parseLicenses, parseTasks, parseVehicles, parseWelfare, unconnectedIn } from './domains.mjs';
+import { loadHolidays, makeCalendar, readRecurringSource } from '../../integrations/local-dual-report/recurring.mjs';
+import { judgeChat, judgeContracts, judgeLicenses, judgeRecurring, judgeWelfare, parseContracts, parseLicenses, parseVehicles, parseWelfare, unconnectedIn } from './domains.mjs';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const argRepo = process.argv.indexOf('--repo');
@@ -27,7 +28,7 @@ const HOME = path.join(os.homedir(), '.aiboot');
 const IMMINENT_FALLBACK = 7;
 const FIELD_TAGS = ['[계약서]', '[라이센스]', '[복지]', '[정기 업무]', '[기타 업무]'];
 // The runner's own read ranges. Each is confirmed against runner.mjs below, so a change there shows up as a warning.
-const RUNNER_RANGES = ["'계약서 검색'!A6:N200", "'프로그램(2026)'!A5:D60", "'업무'!A1:D150", "'계약서(DB)'!C5:C300", "'계약서(DB)'!E5:E300", "'계약서(DB)'!I5:I300", "'계약서(DB)'!Q5:Q300"];
+const RUNNER_RANGES = ["'계약서 검색'!A6:N200", "'프로그램(2026)'!A5:D60", "'계약서(DB)'!C5:C300", "'계약서(DB)'!E5:E300", "'계약서(DB)'!I5:I300", "'계약서(DB)'!Q5:Q300"];
 
 const read = f => { try { return fs.readFileSync(f, 'utf8'); } catch { return null; } };
 const kstDate = (d = new Date()) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul' }).format(d);
@@ -54,6 +55,8 @@ const checks = [
   { label: '일정 계산에서 이지화물 제외', ok: /\/이지화물\/\.test\(vendor\)/.test(src) },
   { label: '보고 본문에 이지화물이 있으면 발송 차단', ok: /\/이지화물\/\.test\(chat\)/.test(src) },
   { label: '임박 창(일)', ok: !!imminentDays },
+  { label: '정기 업무 원본은 [MS] 김현호 규칙표', ok: src.includes('readRecurringSource(sheets.spreadsheets, c.recurringSpreadsheetId') },
+  { label: '옛 날짜형 업무 탭을 읽지 않음', ok: !src.includes("'업무'!A1:D150") },
   ...RUNNER_RANGES.map(r => ({ label: `읽기 범위 ${r}`, ok: src.includes(r) }))
 ];
 const runnerValue = re => { try { return new Function('return ' + m(re))(); } catch { return null; } };
@@ -117,6 +120,15 @@ async function readSheetNames() {
     return { error: errorCode(e) };
   }
 }
+/** Rule tab and history go through the runner's own reader. Holidays are only read here: the cache file is not written. */
+async function readRecurring(basis) {
+  if (!conf?.recurringSpreadsheetId) return { error: '설정 없음' };
+  try {
+    const source = await readRecurringSource(sheetsApi(), conf.recurringSpreadsheetId);
+    return { ...source, calendar: makeCalendar(await loadHolidays({ file: path.join(HOME, 'holidays.json'), today: basis, save: false }), conf) };
+  } catch (e) { return { error: errorCode(e) }; }
+}
+
 /** Each domain fails on its own: a failed read becomes { error }, never an empty target list. */
 async function readDomains(basis) {
   if (NO_SHEET) return {};
@@ -133,7 +145,7 @@ async function readDomains(basis) {
     contracts: expiry.error ? expiry : expiry.contracts,
     licenses: expiry.error ? expiry : expiry.licenses,
     welfare: tab ? await batch(conf?.opsSpreadsheetId, [`'${tab}'!A8:A`, `'${tab}'!E8:E`], ([a, e]) => parseWelfare(a, e)) : { error: '실행기 복지 탭 규칙을 찾지 못함' },
-    tasks: await batch(conf?.spreadsheetId, ["'업무'!A1:D150"], ([t]) => parseTasks(t)),
+    recurring: await readRecurring(basis),
     vehicles: await batch(conf?.contractsSpreadsheetId, ["'계약서(DB)'!C5:C300", "'계약서(DB)'!E5:E300", "'계약서(DB)'!I5:I300", "'계약서(DB)'!Q5:Q300"], ([c, e, i, q]) => parseVehicles(c, e, i, q))
   };
 }
@@ -145,7 +157,7 @@ function chatRecord(rep) {
   const log = rep ? read(path.join(HOME, 'logs', `${rep.date}.log`)) || '' : '';
   const failed = [...log.matchAll(/chat read failed (\S+):/g)].map(x => spaces.indexOf(x[1])).filter(i => i >= 0);
   const cursor = stored && !Number.isNaN(Date.parse(stored)) ? new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(stored)) : null;
-  return { spaces: spaces.length, cursor, failed, sourceFails: [...log.matchAll(/(contracts\/licenses|welfare|dated tasks|vehicle insurance) read failed/g)].map(x => x[1]) };
+  return { spaces: spaces.length, cursor, failed, sourceFails: [...log.matchAll(/(contracts\/licenses|welfare|dated tasks|recurring tasks|vehicle insurance) read failed/g)].map(x => x[1]) };
 }
 
 /* ---------- judge: the runner's own fixedSchedule(), never a second copy of the rules ---------- */
@@ -163,13 +175,13 @@ const domain = judgeFixed({ fixedSchedule, docRows, windowDays: imminentDays ?? 
 
 const today = kstDate(), basisDate = report?.date || today;
 const common = { report, sourceOk, checkedAt: generatedAt, today };
-const src5 = buckets ? await readDomains(basisDate) : Object.fromEntries(['contracts', 'licenses', 'welfare', 'tasks', 'vehicles'].map(k => [k, { error: '실행기 D-구간을 찾지 못함' }]));
+const src5 = buckets ? await readDomains(basisDate) : Object.fromEntries(['contracts', 'licenses', 'welfare', 'recurring', 'vehicles'].map(k => [k, { error: '실행기 D-구간을 찾지 못함' }]));
 const chat = chatRecord(report);
 const domains = [domain,
   judgeContracts(src5.contracts, { ...common, buckets }),
   judgeLicenses(src5.licenses, { ...common, buckets }),
   judgeWelfare(src5.welfare, { ...common, imminentDays: imminentDays ?? IMMINENT_FALLBACK }),
-  judgeRecurring(src5.tasks, src5.vehicles, common),
+  judgeRecurring(src5.recurring, src5.vehicles, common),
   judgeChat(chat, common)];
 const readWarnings = [...new Set(chat.sourceFails)].map(x => `기준 보고일에 실행기 원본 읽기 실패 기록: ${x}`);
 

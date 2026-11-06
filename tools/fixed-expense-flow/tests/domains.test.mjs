@@ -4,10 +4,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { STATUS, REPORT, fieldPart } from '../judge.mjs';
-import { PARTIAL, judgeChat, judgeContracts, judgeLicenses, judgeRecurring, judgeWelfare, keyIn, parseContracts, parseLicenses, parseTasks, parseVehicles, parseWelfare, unconnectedIn } from '../domains.mjs';
+import { HISTORY_HEADER, makeCalendar, parseHistory, parseTasks } from '../../../integrations/local-dual-report/recurring.mjs';
+import { PARTIAL, RECURRING_SINCE, judgeChat, judgeContracts, judgeLicenses, judgeRecurring, judgeWelfare, keyIn, parseContracts, parseLicenses, parseVehicles, parseWelfare, unconnectedIn } from '../domains.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const buckets = [['D-7', 0, 7], ['D-30', 8, 30], ['D-60', 31, 60]];
+const calendar = makeCalendar({ days: ['2026-01-01', '2027-01-01', '2026-10-03'], names: {} });
+const noTasks = { tasks: [], history: new Map(), historyState: '연결', calendar };
 const today = '2026-11-06';
 const agent = (name, fields, extra = {}) => ({ name, fields, inChat: [], inInternal: [], ...extra });
 const report = (...agents) => ({ date: today, slot: 'morning', agents });
@@ -70,7 +73,6 @@ test('계약서: 한 줄에 구간이 섞이면 정상이 아니고, D-구간 �
 
 test('달력에 없는 날짜는 정상이 되지 않음', () => {
   assert.equal(item(judgeContracts(contracts({ name: '갑', end: '2026-99-01' }), { report: both({ '[계약서]': '- D-30 1건 (갑)' }), buckets, today }), '갑').status, STATUS.unverified);
-  assert.equal(judgeRecurring(parseTasks([['h'], ['2026-02-31', '교육', '', '']]), [], { report: both({ '[정기 업무]': '- 교육' }), today }).items[0].status, STATUS.check);
   assert.deepEqual(parseWelfare([['1']], [['2026-99-01']]), { counts: {}, undated: 1 });
 });
 
@@ -105,7 +107,7 @@ test('원본을 못 읽으면 대상 수를 만들지 않음', () => {
   assert.equal(judgeWelfare(undefined, { report: both({}), imminentDays: 7, today }).items[0].status, STATUS.unverified);
   const task = judgeRecurring({ error: 'x' }, [], { report: both({}), today });
   assert.equal(task.summary.check, 1);
-  const noCar = judgeRecurring([], { error: 'x' }, { report: both({}), today });
+  const noCar = judgeRecurring(noTasks, { error: 'x' }, { report: both({}), today });
   assert.equal(noCar.items[0].status, STATUS.check);
 });
 
@@ -125,37 +127,64 @@ test('복지: D-7 이내만 대상, 날짜와 인원수가 맞아야 정상, 7�
   assert.equal(item(judgeWelfare({ counts: {}, undated: 2 }, { report: both({}), imminentDays: 7, today }), '적용일 없는').status, STATUS.check);
 });
 
-test('정기 업무: 날짜·완료 구분, 같은 이름은 날짜로 특정', () => {
-  const tasks = parseTasks([['날짜', '업무', '내용', '완료'],
-    ['2026-11-01', '법정의무교육', '비밀 내용', ''], ['2026-12-01', 'SGI보증보험 가입', '', 'FALSE'], ['2027-03-01', '먼 업무', '', ''],
-    ['2026-09-01', '오래된 업무', '', ''], ['2026-11-02', '끝난 업무', '', 'TRUE'], ['', '날짜없는 업무', '', '']]);
-  const r = judgeRecurring(tasks, [], { report: both({ '[정기 업무]': '- 11/01 법정의무교육 (D+5)' }), today });
-  assert.equal(item(r, '법정의무교육').status, STATUS.ok);
-  assert.equal(item(r, 'SGI').status, STATUS.check);
-  assert.equal(item(r, '먼 업무').report, REPORT.excluded);
-  assert.equal(item(r, '오래된 업무').status, STATUS.check);
-  assert.equal(item(r, '날짜없는').status, STATUS.check);
-  assert.equal(item(r, '끝난 업무'), undefined);
-  assert.match(r.inactiveNote, /완료 표시 1건/);
-  assert.equal(JSON.stringify(r).includes('비밀 내용'), false);
-  const elsewhere = judgeRecurring(tasks, [], { report: both({ '[정기 업무]': '- 12/25 법정의무교육' }), today });
-  assert.equal(item(elsewhere, '법정의무교육').status, STATUS.unverified);
-  const dup = parseTasks([['h'], ['2026-11-01', '주차권', '', ''], ['2026-12-01', '주차권', '', '']]);
-  assert.equal(judgeRecurring(dup, [], { report: both({ '[정기 업무]': '- 주차권 확인' }), today }).items[0].status, STATUS.unverified);
+test('정기 업무: 규칙표 회차를 보고와 대조, 완료·보류·다음 회차·날짜 불명을 구분', () => {
+  const tasks = parseTasks([['주차권 구매', '매월', '첫 영업일'], ['법정의무교육', '매년 2회', '05-01, 11-01'], ['SGI보증보험', '매년 1회', '12-15'], ['어버이날 포인트', '매년', '05-08'], ['멈춘 업무', '매년', '12-01', '중지'], ['분기 점검', '분기', '말일']], ['T1', 'T2', 'T3', 'T4', 'T5', 'T6']);
+  const history = parseHistory([HISTORY_HEADER, ['T1', '2026-11', '완료', 'x', '비밀 근거', '2026-11-02'], ['T3', '2026', '보류', 'x', '사유', '2026-12-15']]);
+  const r = judgeRecurring({ tasks, history, historyState: '연결', calendar }, [], { report: both({ '[정기 업무]': '- 11/01 법정의무교육 (D+5)\n- 12/01 주차권 구매' }), today });
+  assert.equal(item(r, '주차권 구매 · 2026-11').report, REPORT.excluded);
+  assert.equal(item(r, '주차권 구매 · 2026-12').status, STATUS.ok);
+  assert.equal(item(r, '법정의무교육 · 2026-2').status, STATUS.ok);
+  assert.equal(item(r, 'SGI보증보험 · 2026').reason, '처리이력 보류');
+  assert.equal(item(r, '어버이날 포인트 · 2027').report, REPORT.excluded);
+  assert.equal(item(r, '멈춘 업무'), undefined);
+  assert.match(r.inactiveNote, /중지 1건/);
+  assert.equal(item(r, '분기 점검').status, STATUS.check);
+  assert.equal(JSON.stringify(r).includes('비밀 근거'), false);
+});
+
+test('정기 업무: 보고 누락, 날짜 불일치, 동명 업무, 사용 여부 완료, 이력 상태를 구분', () => {
+  const tasks = parseTasks([['법정의무교육', '매년 2회', '05-01, 11-01']], ['T1']);
+  const judge = (source, text) => judgeRecurring({ history: new Map(), historyState: '연결', calendar, ...source }, [], { report: both({ '[정기 업무]': text }), today });
+  assert.equal(judge({ tasks }, '- 해당 없음').items[0].status, STATUS.check);
+  assert.equal(judge({ tasks }, '- 12/25 법정의무교육').items[0].status, STATUS.unverified);
+  const same = parseTasks([['주차권', '매년', '11-01'], ['주차권', '매년', '11-01']], ['A', 'B']);
+  assert.equal(judge({ tasks: same }, '- 11/01 주차권').items[0].status, STATUS.unverified);
+  const flagged = parseTasks([['법정의무교육', '매년 2회', '05-01, 11-01', '완료']], ['T1']);
+  assert.equal(judge({ tasks: flagged }, '- 11/01 법정의무교육').items[0].status, STATUS.check);
+  assert.equal(judge({ tasks, historyState: '조회 실패' }, '- 11/01 법정의무교육').items[0].status, STATUS.unverified);
+  const unseeded = judge({ tasks, historyState: '미생성' }, '- 11/01 법정의무교육');
+  assert.equal(unseeded.items[0].status, STATUS.ok);
+  assert.match(unseeded.inactiveNote, /미생성/);
+  const noNote = parseHistory([HISTORY_HEADER, ['T1', '2026-2', '완료', 'x', '', '2026-11-01']]);
+  assert.equal(judge({ tasks, history: noNote }, '- 11/01 법정의무교육').items[0].status, STATUS.check);
+});
+
+test('정기 업무: 날짜를 계산 못 하면 임의 날짜 없이 확인 필요, 원본을 옮긴 뒤 D+30 초과만 미처리로 셈', () => {
+  const tasks = parseTasks([['주차권', '매월', '첫 영업일']], ['T1']);
+  const blind = judgeRecurring({ tasks, history: new Map(), historyState: '연결', calendar: makeCalendar(null) }, [], { report: both({ '[정기 업무]': '- 주차권' }), today });
+  assert.ok(blind.items.every(i => i.status === STATUS.check && i.target === '날짜 불명'));
+  const fixed = parseTasks([['SGI', '매년', '12-15']], ['T2']);
+  const later = judgeRecurring({ tasks: fixed, history: new Map(), historyState: '연결', calendar }, [], { report: { ...both({ '[정기 업무]': '- 해당 없음' }), date: '2027-01-20' }, today: '2027-01-20' });
+  assert.equal(item(later, 'SGI · 2026').status, STATUS.check);
+  assert.match(item(later, 'SGI · 2026').reason, /보고 범위\(30일\) 밖/);
+  assert.equal(RECURRING_SINCE, '2026-11-06');
+  const old = parseTasks([['법정의무교육', '매년 2회', '05-01, 11-01']], ['T1']);
+  const r = judgeRecurring({ tasks: old, history: new Map(), historyState: '연결', calendar }, [], { report: both({ '[정기 업무]': '- 해당 없음' }), today });
+  assert.equal(item(r, '법정의무교육 · 2026-1'), undefined);
 });
 
 test('차량 보험: Q열 재가입 완료만 정상 제외, 번호판·Q열 원문은 결과에 없음', () => {
   const v = parseVehicles([['보험료'], ['보험료'], ['기타']], [['차량보험 12가3456 벤츠 홍길동'], ['차량보험 BMW 99나9999'], ['차량보험']], [['2026-10-01'], ['2026-10-02'], ['2026-10-03']], [['재가입 완료 메모'], ['']]);
   assert.equal(v.length, 2);
-  const r = judgeRecurring([], v, { report: both({ '[정기 업무]': '- 해당 없음' }), today });
+  const r = judgeRecurring(noTasks, v, { report: both({ '[정기 업무]': '- 해당 없음' }), today });
   assert.equal(item(r, '차량 보험 벤츠').report, REPORT.excluded);
   assert.equal(item(r, '차량 보험 BMW').status, STATUS.check);
   const text = JSON.stringify(r);
   for (const leak of ['12가3456', '홍길동', '99나9999', '메모']) assert.equal(text.includes(leak), false, leak);
-  assert.equal(item(judgeRecurring([], v, { report: both({ '[정기 업무]': '- 차량 보험 BMW: 확인 필요' }), today }), '차량 보험 BMW').status, STATUS.ok);
-  assert.equal(item(judgeRecurring([], v, { report: both({ '[정기 업무]': '- BMW 화재 보험 확인' }), today }), '차량 보험 BMW').status, STATUS.check);
+  assert.equal(item(judgeRecurring(noTasks, v, { report: both({ '[정기 업무]': '- 차량 보험 BMW: 확인 필요' }), today }), '차량 보험 BMW').status, STATUS.ok);
+  assert.equal(item(judgeRecurring(noTasks, v, { report: both({ '[정기 업무]': '- BMW 화재 보험 확인' }), today }), '차량 보험 BMW').status, STATUS.check);
   const unknownCar = parseVehicles([['보험료']], [['차량보험 트럭']], [['2026-10-01']], [['']]);
-  assert.equal(judgeRecurring([], unknownCar, { report: both({ '[정기 업무]': '- 차량 보험 확인' }), today }).items[0].status, STATUS.unverified);
+  assert.equal(judgeRecurring(noTasks, unknownCar, { report: both({ '[정기 업무]': '- 차량 보험 확인' }), today }).items[0].status, STATUS.unverified);
 });
 
 test('기타 업무: 조회가 성공해도 메시지별 정상을 만들지 않음', () => {

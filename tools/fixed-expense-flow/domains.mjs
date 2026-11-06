@@ -6,6 +6,7 @@
  * 금액·연락처·개인 이름·메시지 원문은 결과에 넣지 않는다.
  */
 import { REPORT, STATUS, addDay } from './judge.mjs';
+import { HISTORY_TAB, WINDOW, occurrenceState, occurrences } from '../../integrations/local-dual-report/recurring.mjs';
 
 export const PARTIAL = '건수만 포함';
 /** A real calendar date only: 2026-99-01 and 2026-02-31 are not dates. */
@@ -71,17 +72,6 @@ export function parseWelfare(no, applied) {
     if (isDate(e)) counts[e] = (counts[e] || 0) + 1; else undated++;
   });
   return { counts, undated };
-}
-
-/** '업무'!A1:D150. A 날짜, B 업무, D 완료만 쓴다. C 내용은 넘기지 않는다. */
-export function parseTasks(values) {
-  const rows = [];
-  (values || []).slice(1).forEach((r, i) => {
-    const title = scrub(r[1]);
-    if (!title) return;
-    rows.push({ row: 2 + i, title, due: String(r[0] || '').trim(), done: r[3] === true || String(r[3]).toUpperCase() === 'TRUE' });
-  });
-  return rows;
 }
 
 /** '계약서(DB)' C·E·I·Q. 차량보험 행만, 차종·종료일·재가입 완료 여부만 쓴다. 번호판·이름이 있는 E 원문과 Q 원문은 넘기지 않는다. */
@@ -217,29 +207,52 @@ export function judgeWelfare(data, { report, sourceOk, imminentDays, checkedAt, 
   return finish(meta, items, { report, sourceOk, inactiveNote: past ? `지난 적용일 ${past}명은 대상에서 제외` : '' });
 }
 
-/* ---------- 정기 업무: 업무 탭 날짜·완료, 차량보험 Q열 ---------- */
+/* ---------- 정기 업무: [MS] 김현호 규칙표 + 회차별 처리이력, 차량보험 Q열 ---------- */
 
-export function judgeRecurring(tasks, vehicles, { report, sourceOk, checkedAt, today }) {
-  const meta = { id: 'recurring', name: '정기 업무' };
-  if (!tasks || tasks.error) return unreadable(meta, tasks, checkedAt);
-  const date = report?.date || today, items = [];
-  const open = tasks.filter(t => !t.done);
-  for (const t of open) {
-    const shownDue = isDate(t.due) ? t.due : t.due ? '날짜 아님' : '날짜 없음';
-    const item = base(t.row, t.title, `업무 탭 ${t.row}행`, shownDue, [['날짜', shownDue], ['완료 표시', '없음']], checkedAt);
-    if (!isDate(t.due)) { items.push({ ...item, status: STATUS.check, report: REPORT.missing, reason: '날짜가 없어 실행기가 보고하지 못함' }); continue; }
-    const d = days(date, t.due);
-    if (d > 60) { items.push({ ...item, status: STATUS.ok, report: REPORT.excluded, reason: `D-${d} — 보고 범위(D-60) 전` }); continue; }
-    if (d < -30) { items.push({ ...item, status: STATUS.check, report: REPORT.missing, reason: `D+${-d}, 완료 표시 없음 — 실행기 보고 범위(30일) 밖이라 보고되지 않음` }); continue; }
-    if (!report) { items.push(noReport(item)); continue; }
-    const results = {};
-    for (const a of report.agents.filter(x => !x.unread)) {
-      const hits = reportLines(a, '[정기 업무]').filter(l => keyIn(l, t.title));
-      results[a.name] = !hits.length ? 'missing' : hits.some(l => dateIn(l, t.due)) ? 'named' : 'partial';
-    }
-    items.push({ ...item, ...verdict(results, `${d < 0 ? 'D+' + -d : 'D-' + d} 보고 대상`, `보고에 이름은 있지만 날짜 ${md(t.due)}로 특정되지 않음`) });
+// 원본을 옮긴 날. 이전 회차는 처리이력이 있을 수 없어 D+30을 넘어도 미처리로 세지 않는다.
+export const RECURRING_SINCE = '2026-11-06';
+
+function judgeOccurrence(t, o, source, ctx) {
+  const { report, checkedAt, date } = ctx;
+  const shownUse = t.use.label;
+  const item = base(t.row * 1000 + ctx.index, `${t.title} · ${o.key}`, `업무 ${t.row}행`, o.due, [['규칙', `${t.cycle} ${t.basis}`], ['회차', o.key], ['기준일', o.due], ['사용 여부', shownUse]], checkedAt);
+  const d = o.d;
+  if (source.historyState === '조회 실패') return { ...item, status: STATUS.unverified, report: REPORT.unknown, reason: `${HISTORY_TAB}을 읽지 못해 회차 상태를 판정할 수 없음` };
+  const state = occurrenceState(t, o, source.history);
+  item.details.push(['처리이력', state.why]);
+  if (state.state === '완료' || state.state === '보류') return { ...item, status: STATUS.ok, report: REPORT.excluded, reason: state.why };
+  if (state.state === '확인 필요') return { ...item, status: STATUS.check, report: REPORT.unknown, reason: state.why };
+  if (t.use.warn) return { ...item, status: STATUS.check, report: REPORT.unknown, reason: t.use.warn };
+  if (d > WINDOW.after) return { ...item, status: STATUS.ok, report: REPORT.excluded, reason: `D-${d} — 보고 범위(D-${WINDOW.after}) 전` };
+  if (d < -WINDOW.before) return { ...item, status: STATUS.check, report: REPORT.missing, reason: `D+${-d}, 처리 기록 없음 — 실행기 보고 범위(${WINDOW.before}일) 밖이라 보고되지 않음` };
+  if (!report) return noReport(item);
+  const results = {};
+  for (const a of report.agents.filter(x => !x.unread)) {
+    const hits = reportLines(a, '[정기 업무]').filter(l => keyIn(l, t.title));
+    results[a.name] = !hits.length ? 'missing' : hits.some(l => dateIn(l, o.due)) ? (t.sameTitle ? 'partial' : 'named') : 'partial';
   }
-  const finished = tasks.length - open.length;
+  return { ...item, ...verdict(results, `${d < 0 ? 'D+' + -d : 'D-' + d} 보고 대상`, t.sameTitle ? '같은 이름 업무가 있어 행을 특정하지 못함' : `보고에 이름은 있지만 날짜 ${md(o.due)}로 특정되지 않음`) };
+}
+
+export function judgeRecurring(source, vehicles, { report, sourceOk, checkedAt, today }) {
+  const meta = { id: 'recurring', name: '정기 업무' };
+  if (!source || source.error) return unreadable(meta, source, checkedAt);
+  const date = report?.date || today, items = [];
+  // 보고 범위 밖도 원본을 옮긴 뒤의 회차와 다음 1회차까지 보여 준다. 그 이상은 미리 만들지 않는다.
+  const before = Math.max(WINDOW.before, days(RECURRING_SINCE, date));
+  const stopped = source.tasks.filter(t => !t.use.active).length;
+  for (const t of source.tasks.filter(x => x.use.active)) {
+    const ownBase = (reason, target = '-') => ({ ...base(t.row * 1000, t.title, `업무 ${t.row}행`, target, [['규칙', `${t.cycle} ${t.basis}`.trim() || '없음'], ['사용 여부', t.use.label]], checkedAt), status: STATUS.check, report: REPORT.missing, reason });
+    if (t.rule.error) { items.push(ownBase(`규칙 확인 필요: ${t.rule.error}`)); continue; }
+    const list = occurrences(t.rule, source.calendar, date, { before, after: 400 });
+    const near = list.filter(o => o.unknown || o.d <= WINDOW.after);
+    const shown = near.some(o => o.due && o.d >= 0) ? near : [...near, ...list.filter(o => o.due && o.d > WINDOW.after).slice(0, 1)];
+    shown.forEach((o, index) => {
+      if (o.unknown) items.push({ ...ownBase(`날짜 계산 불가: ${o.unknown}`, '날짜 불명'), row: t.row * 1000 + index });
+      else items.push(judgeOccurrence(t, o, source, { report, checkedAt, date, index }));
+    });
+  }
+  const notes = [stopped ? `사용 여부 중지 ${stopped}건은 대상에서 제외` : '', source.historyState === '미생성' ? `${HISTORY_TAB} 탭 미생성 — 모든 회차가 미처리` : '', source.registered === false ? 'Master_Sheet에서 이 원본을 찾지 못함' : ''];
   if (!vehicles || vehicles.error) items.push({ ...base(100000, '차량 보험', vehicles?.error ? `원본 조회 실패: ${vehicles.error}` : '원본을 조회하지 않음', '-', [], checkedAt),
     status: vehicles?.error ? STATUS.check : STATUS.unverified, report: REPORT.unknown, reason: '계약서(DB)를 읽지 못해 차량 보험을 판정할 수 없음' });
   else for (const v of vehicles) {
@@ -259,7 +272,7 @@ export function judgeRecurring(tasks, vehicles, { report, sourceOk, checkedAt, t
     }
     items.push({ ...item, ...verdict(results, 'Q열 표시 없이 종료', '차종으로 행을 특정하지 못함') });
   }
-  return finish(meta, items, { report, sourceOk, inactiveNote: finished ? `완료 표시 ${finished}건은 대상에서 제외` : '' });
+  return finish(meta, items, { report, sourceOk, inactiveNote: notes.filter(Boolean).join(' · ') });
 }
 
 /* ---------- 기타 업무: 저장된 실행 기록뿐이라 메시지 단위 정상은 만들지 않는다 ---------- */
