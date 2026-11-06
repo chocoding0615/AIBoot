@@ -59,7 +59,7 @@ for (const f of logFiles) {
     let x;
     if (/^snapshot /.test(msg)) sheets.lastOk = t;
     else if (/^FATAL/.test(msg)) sheets.lastFail = t;
-    else if ((x = /^FAILED (\S+): (.*)/.exec(msg))) agentErrors.push({ at: t, key: x[1], reason: x[2].replace(/[A-Za-z0-9_-]{20,}/g, '<id>').slice(0, 200) });
+    else if ((x = /^FAILED (\S+):/.exec(msg))) agentErrors.push({ at: t, key: x[1] }); // the key only: error text may hold anything
   }
 }
 
@@ -75,11 +75,12 @@ if (latest) {
   const [date, slot] = latest;
   const agents = sent.filter(([d, s]) => d === date && s === slot).flatMap(([, , agent]) => {
     const text = read(path.join(HOME, 'reports', `${date}-${slot}-${agent}.md`));
-    if (!text) return [];
+    const name = agent === 'codex' ? 'Codex' : 'Antigravity';
+    if (!text) return [{ name, unread: true, inChat: [], inInternal: [] }];
     const ci = text.lastIndexOf('=== CHAT ==='), ni = text.indexOf('=== INTERNAL ===', ci);
-    return [{ name: agent === 'codex' ? 'Codex' : 'Antigravity', inChat: vendorsIn(fixedPart(ci >= 0 ? text.slice(ci, ni > ci ? ni : undefined) : ''), vendors), inInternal: vendorsIn(ni >= 0 ? text.slice(ni) : '', vendors) }];
+    return [{ name, inChat: vendorsIn(fixedPart(ci >= 0 ? text.slice(ci, ni > ci ? ni : undefined) : ''), vendors), inInternal: vendorsIn(ni >= 0 ? text.slice(ni) : '', vendors) }];
   });
-  if (agents.length) report = { date, slot, agents };
+  if (agents.some(a => !a.unread)) report = { date, slot, agents };
 }
 
 /* ---------- source sheet: vendor names only ---------- */
@@ -110,7 +111,7 @@ try {
 
 const generatedAt = new Date().toISOString();
 const holidays = JSON.parse(read(path.join(HOME, 'holidays.json')) || '{}').days || [];
-const sourceOk = !(sheets.lastFail && (!sheets.lastOk || sheets.lastFail > sheets.lastOk));
+const sourceOk = !!sheets.lastOk && !(sheets.lastFail > sheets.lastOk);
 const domain = judgeFixed({ fixedSchedule, docRows, windowDays: imminentDays ?? IMMINENT_FALLBACK, report, sheet: await readSheetNames(), sourceOk, holidays, checkedAt: generatedAt, today: kstDate() });
 
 const out = { generatedAt, repo: repoInfo(), checks, scheduleError, report: report && { date: report.date, slot: report.slot, agents: report.agents.map(a => a.name) },

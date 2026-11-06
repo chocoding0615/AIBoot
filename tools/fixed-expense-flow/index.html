@@ -71,7 +71,7 @@ if (!e || !e.domains) {
   const d = e.domains[0], s = d.summary;
   const warnings = [...d.warnings, ...(e.scheduleError ? [e.scheduleError] : []),
     ...e.checks.filter(c => !c.ok).map(c => `실행기 코드 확인 실패: ${c.label}`),
-    ...e.errors.filter(x => e.report && x.key.startsWith(`${e.report.date}|${e.report.slot}|`) && !x.key.includes('|test')).map(x => `기준 보고 실패 기록(${x.key.split('|')[2]}): ${x.reason}`)];
+    ...e.errors.filter(x => e.report && x.key.startsWith(`${e.report.date}|${e.report.slot}|`) && !x.key.includes('|test')).map(x => `기준 보고에 ${x.key.split('|')[2]} 실패 기록이 있음(${when(x.at)})`)];
   app.innerHTML = `
     <h1>AIBoot 연결현황</h1>
     <div class="sub">고정비가 보고에 없을 때 정상 제외인지 누락 의심인지 확인합니다. 판정 기준 코드: ${esc(e.repo.branch)}</div>

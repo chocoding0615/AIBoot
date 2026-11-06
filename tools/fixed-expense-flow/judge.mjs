@@ -24,23 +24,23 @@ export const addDay = (ymd, n) => new Date(Date.parse(ymd + 'T00:00:00Z') + n * 
 const md = ymd => ymd.slice(5).replace('-', '/');
 const norm = s => String(s).replace(/[\s()·]/g, '').toLowerCase();
 
-/** The vendors named in a report text. */
+/** The vendors named in a report text, line by line. Names of 2 letters or fewer need a word end (KT, not KT텔레캅). */
+const named = (line, n) => n.length > 2 ? norm(line).includes(norm(n)) : new RegExp(n + '(?![a-z0-9가-힣])', 'i').test(line);
 export const vendorsIn = (text, vendors) => {
-  const t = norm(text);
-  return vendors.filter(v => [v, ...(ALIASES[v] || [])].some(n => t.includes(norm(n))));
+  const lines = String(text).split('\n');
+  return vendors.filter(v => [v, ...(ALIASES[v] || [])].some(n => lines.some(l => named(l, n))));
 };
 
-/** Only the report lines that count as the fixed-cost check: 오늘 완료 and [고정비] blocks. A vendor named in the
- *  summary or another field (e.g. 생각공장 주차권 under [정기 업무]) is not proof that its payment was reported. */
+/** Only the report lines that count as the fixed-cost check: the [고정비] blocks. A vendor named in the summary
+ *  or another field (e.g. 생각공장 주차권 under [정기 업무]) is not proof that its payment was reported. */
 export function fixedPart(chat) {
   const keep = [];
-  let field = null, done = false;
+  let field = null;
   for (const l of String(chat).split('\n')) {
     const t = l.trim();
-    if (/^-{5,}$/.test(t)) { field = null; done = false; continue; }
-    if (t === '오늘 완료') { done = true; continue; }
+    if (/^-{5,}$/.test(t)) { field = null; continue; }
     if (/^\[[^\]]+\]$/.test(t)) { field = t; continue; }
-    if (done || field === '[고정비]') keep.push(l);
+    if (field === '[고정비]') keep.push(l);
   }
   return keep.join('\n');
 }
@@ -72,10 +72,13 @@ function sourceState(doc, sheet) {
 
 /** Whether the vendor's absence from the report is proven; the only place that decides 정상 제외 / 누락 의심. */
 function reportState(v, { report, imminent, next }) {
-  const agents = report.agents.filter(a => a.inChat.includes(v)).map(a => a.name);
-  if (agents.length) return { report: REPORT.included, status: STATUS.ok, reason: `${agents.join('·')} 보고에 포함` };
+  const read = report.agents.filter(a => !a.unread);
+  const has = read.filter(a => a.inChat.includes(v)).map(a => a.name), lacking = read.filter(a => !a.inChat.includes(v)).map(a => a.name);
+  // 대상 업체를 한쪽 보고만 다룬 경우 다른 쪽의 누락을 덮지 않는다.
+  if (has.length && imminent && lacking.length) return { report: REPORT.included, status: STATUS.check, reason: `예정일 ${md(imminent)} 보고 대상 — ${has.join('·')} 보고에만 포함, ${lacking.join('·')} 보고에 없음` };
+  if (has.length) return { report: REPORT.included, status: STATUS.ok, reason: `${has.join('·')} 보고에 포함` };
   if (imminent) {
-    const noted = report.agents.some(a => a.inInternal.includes(v));
+    const noted = read.some(a => a.inInternal.includes(v));
     return { report: REPORT.missing, status: STATUS.check, reason: `예정일 ${md(imminent)}로 보고 대상인데 보고에 없음 — ` +
       (noted ? 'AI 내부 근거에만 언급, 제외 사유 입증 안 됨' : '제외 근거 없음') };
   }
@@ -86,7 +89,7 @@ function reportState(v, { report, imminent, next }) {
 /**
  * @param fixedSchedule 실행기 함수 (없으면 전 업체 미검증)
  * @param docRows parseDocRows() 결과(원본 23행)
- * @param report 점검에 쓴 최근 정기 보고 { date, slot, agents: [{ name, inChat, inInternal }] } | null
+ * @param report 점검에 쓴 최근 정기 보고 { date, slot, agents: [{ name, inChat, inInternal, unread? }] } | null
  * @param sheet { rows: { 행: 이름 } } | { error } | null
  * @param sourceOk 최근 실행기의 시트 읽기가 성공했으면 true, 실패로 끝났으면 false
  */
@@ -95,6 +98,7 @@ export function judgeFixed({ fixedSchedule, docRows, windowDays, report, sheet, 
   const active = fixedSchedule ? fixedSchedule(basis) : [];
   const windowEnd = addDay(basis, windowDays);
   const items = [], warnings = [];
+  const unread = (report?.agents || []).filter(a => a.unread).map(a => a.name);
   const inactive = fixedSchedule ? docRows.filter(d => !active.some(s => s.row === d.row)).map(d => d.vendor) : [];
 
   for (const doc of docRows) {
@@ -119,6 +123,7 @@ export function judgeFixed({ fixedSchedule, docRows, windowDays, report, sheet, 
     if (sourceOk === false) { item.status = STATUS.check; item.reason = `최근 시트 읽기 실패 — ${r.reason}`; }
     else if (source.state === STATUS.check) { item.status = STATUS.check; item.reason = `${source.text} — ${r.reason}`; }
     else if (source.state === STATUS.unverified && item.status === STATUS.ok) { item.status = STATUS.unverified; item.reason = `원본 시트 미조회 — ${r.reason}`; }
+    else if (unread.length && item.status === STATUS.ok) { item.status = STATUS.unverified; item.reason = `${unread.join('·')} 보고 파일을 읽지 못함 — ${r.reason}`; }
     items.push(item);
   }
 

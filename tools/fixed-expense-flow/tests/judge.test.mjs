@@ -117,3 +117,28 @@ test('10. 지역 없는 코웨이는 어느 쪽 포함으로도 판정하지 않
   assert.deepEqual(vendorsIn('코웨이(본사) 렌탈료', ['코웨이(본사)', '코웨이(양주)']), ['코웨이(본사)']);
   assert.deepEqual(vendorsIn('센디 운임', ['Sendy']), ['Sendy']);
 });
+
+test('11. 다른 분야의 완료 줄·부분 이름·줄 걸친 문자열은 포함 근거가 아님', () => {
+  const chat = ['오늘 완료', '[정기 업무]', '- 생각공장 주차권 구매 완료', '--------------------', '오늘 남은 일', '[고정비]', '- 해당 없음'].join('\n');
+  assert.deepEqual(vendorsIn(fixedPart(chat), ['생각공장']), []);
+  assert.deepEqual(vendorsIn('KT텔레캅 계약', ['KT']), []);
+  assert.deepEqual(vendorsIn('- 25일 납부: KT — 청구 확인', ['KT']), ['KT']);
+  assert.deepEqual(vendorsIn('매장\n전기료', ['매장 전기료']), []);
+});
+
+test('12. 대상 업체를 한쪽 AI만 다루면 확인 필요, 읽지 못한 보고는 미검증', () => {
+  const two = { date: '2026-11-06', slot: 'morning', agents: [{ name: 'Codex', inChat: nov6, inInternal: [] }, { name: 'Antigravity', inChat: nov6.slice(1), inInternal: [] }] };
+  const r = run({ report: two });
+  assert.equal(item(r, '알고퀵').status, STATUS.check);
+  assert.match(item(r, '알고퀵').reason, /Codex 보고에만 포함, Antigravity 보고에 없음/);
+  assert.equal(item(r, 'Sendy').status, STATUS.ok);
+  const unread = { ...two, agents: [two.agents[0], { name: 'Antigravity', unread: true, inChat: [], inInternal: [] }] };
+  const u = run({ report: unread });
+  assert.equal(item(u, '알고퀵').status, STATUS.unverified);
+  assert.match(item(u, '베네피아').reason, /Antigravity 보고 파일을 읽지 못함/);
+});
+
+test('13. 결과 파일에 오류 원문을 복사하지 않음', () => {
+  const build = fs.readFileSync(path.join(HERE, '..', 'build-evidence.mjs'), 'utf8');
+  assert.doesNotMatch(build, /agentErrors\.push\(\{[^}]*reason/);
+});
