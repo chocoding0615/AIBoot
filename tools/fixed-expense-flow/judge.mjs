@@ -24,8 +24,8 @@ export const addDay = (ymd, n) => new Date(Date.parse(ymd + 'T00:00:00Z') + n * 
 const md = ymd => ymd.slice(5).replace('-', '/');
 const norm = s => String(s).replace(/[\s()·]/g, '').toLowerCase();
 
-/** The vendors named in a report text, line by line. Names of 2 letters or fewer need a word end (KT, not KT텔레캅). */
-const named = (line, n) => n.length > 2 ? norm(line).includes(norm(n)) : new RegExp(n + '(?![a-z0-9가-힣])', 'i').test(line);
+/** The vendors named in a report text, line by line. Names of 2 letters or fewer must stand alone (KT, not SKT or KT텔레캅). */
+const named = (line, n) => n.length > 2 ? norm(line).includes(norm(n)) : new RegExp('(?<![a-z0-9가-힣])' + n + '(?![a-z0-9가-힣])', 'i').test(line);
 export const vendorsIn = (text, vendors) => {
   const lines = String(text).split('\n');
   return vendors.filter(v => [v, ...(ALIASES[v] || [])].some(n => lines.some(l => named(l, n))));

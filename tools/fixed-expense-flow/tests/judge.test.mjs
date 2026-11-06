@@ -122,6 +122,7 @@ test('11. 다른 분야의 완료 줄·부분 이름·줄 걸친 문자열은 �
   const chat = ['오늘 완료', '[정기 업무]', '- 생각공장 주차권 구매 완료', '--------------------', '오늘 남은 일', '[고정비]', '- 해당 없음'].join('\n');
   assert.deepEqual(vendorsIn(fixedPart(chat), ['생각공장']), []);
   assert.deepEqual(vendorsIn('KT텔레캅 계약', ['KT']), []);
+  assert.deepEqual(vendorsIn('SKT 통신비', ['KT']), []);
   assert.deepEqual(vendorsIn('- 25일 납부: KT — 청구 확인', ['KT']), ['KT']);
   assert.deepEqual(vendorsIn('매장\n전기료', ['매장 전기료']), []);
 });

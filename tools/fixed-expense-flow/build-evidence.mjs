@@ -105,9 +105,9 @@ async function readSheetNames() {
 let fixedSchedule = null, scheduleError = null;
 try {
   const fnSrc = m(/(function fixedSchedule\(date\) \{[\s\S]*?\n\})/);
-  if (!fnSrc) throw new Error('fixedSchedule()을 찾지 못함 — 코드 구조 변경, 화면 재검토 필요');
+  if (!fnSrc) throw new Error('fixedSchedule not found');
   fixedSchedule = new Function('fs', 'path', 'REPO', fnSrc + '\nreturn fixedSchedule;')({ readFileSync: (...a) => fs.readFileSync(...a) }, path, REPO);
-} catch (e) { scheduleError = e.message; }
+} catch { scheduleError = '실행기 일정 계산을 불러오지 못함 — 코드 구조 변경 여부 확인 필요'; }
 
 const generatedAt = new Date().toISOString();
 const holidays = JSON.parse(read(path.join(HOME, 'holidays.json')) || '{}').days || [];
