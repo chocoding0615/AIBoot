@@ -59,7 +59,7 @@ export function planMark(source, { id, key, status, note }, cal, today, stamp) {
   const current = source.history.get(`${id}|${key}`);
   if (current?.duplicate) throw new Error('같은 회차 행이 이미 여럿 — 수동 정리 필요');
   if (!current && status === '미처리') return { op: 'none', reason: '기록이 없어 되돌릴 것이 없음' };
-  if (current?.status === status && current.basis === occ.due) return { op: 'none', reason: '이미 같은 상태' };
+  if (current?.status === status && current.basis === occ.due && (status === '미처리' || current.hasNote)) return { op: 'none', reason: '이미 같은 상태' };
   return { op: current ? 'update' : 'append', row: current?.row, values: [id, key, status, stamp, text, occ.due] };
 }
 

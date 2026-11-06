@@ -80,6 +80,7 @@ test('날짜 불명: 공휴일 목록이 없으면 첫 영업일·명절을 만�
   assert.ok(occurrences(rule('매년 2회', '설·추석 -10영업일'), none, today).every(o => o.unknown && !o.due));
   assert.deepEqual(dues(rule('매년 1회', '12-15'), none), ['2026-12-15']);
   assert.match(occurrences(rule('매년', '02-29'), cal, '2026-02-10')[0].unknown, /없는 날짜/);
+  assert.match(occurrences(rule('매년 2회', '설·추석 -999영업일'), cal, '2026-08-20')[0].unknown, /추석|설날/);
   const feedNoYear = makeCalendar(parseHolidayFeed(event('20261225', '기독탄신일')));
   assert.match(occurrences(rule('매년 2회', '설·추석 -10영업일'), feedNoYear, '2026-08-20')[0].unknown, /추석|설날/);
 });
@@ -124,6 +125,7 @@ test('증빙 없는 완료·중복 행·기준일 변경은 완료로 인정하�
   assert.equal(state([['T3', '2026-2', '완료', 'x', '근거', '2026-11-01'], ['T3', '2026-2', '완료', 'x', '근거', '2026-11-01']]), '확인 필요');
   assert.equal(state([['T3', '2026-2', '완료', 'x', '근거', '2026-11-02']]), '확인 필요');
   assert.equal(state([['T3', '2026-2', '끝남', 'x', '근거', '2026-11-01']]), '확인 필요');
+  assert.equal(state([['T3', '2026-2', '완료', 'x', '근거', '']]), '확인 필요');
   assert.equal(state([['T3', '2026-2', '미처리', 'x', '', '2026-11-01']]), '미처리');
   assert.equal(state([['T3', '2026-2', '완료', 'x', '근거', '2026-11-01']]), '완료');
   const monthly = source().tasks[0];
@@ -178,6 +180,13 @@ test('원본 읽기: 다른 파일 차단, 탭 없음 실패, 이력 미생성·
   assert.equal(a.ranges.some(r => r.includes(HISTORY_TAB)), false);
   assert.equal((await readRecurringSource(fakeApi({ tabs: ['업무', 'Master_Sheet', HISTORY_TAB], historyFail: true }), 'id')).historyState, '조회 실패');
   assert.equal((await readRecurringSource(fakeApi({ tabs: ['업무', 'Master_Sheet', HISTORY_TAB] }), 'id')).historyState, '연결');
+  const swapped = await readRecurringSource(fakeApi({ tabs: ['업무', 'Master_Sheet', HISTORY_TAB], history: [['업무ID', '회차키', '처리시각', '상태', '비고', '회차기준일'], ['T1', '2026', 'x', '완료', '근거', '2026-12-15']] }), 'id');
+  assert.equal(swapped.historyState, '조회 실패');
+  assert.equal(swapped.history.size, 0);
+  assert.throws(() => planMark(swapped, { id: 'T1', key: '2026', status: '완료', note: 'x' }, cal, today, 's'), /--init/);
+  const a2 = fakeApi({ tabs: ['업무', 'Master_Sheet', HISTORY_TAB] });
+  await readRecurringSource(a2, 'id');
+  assert.ok(a2.ranges.some(r => r.endsWith('!A:F')));
 });
 
 test('--init 계획: 숨김 탭 1개, 머리글, 업무 셀은 쓰지 않고 ID 없는 행만 지정, 두 번째는 할 일 없음', () => {
@@ -217,6 +226,9 @@ test('--mark 계획: 증빙 필수, 같은 회차는 새 행 없이 갱신, 중�
   assert.equal(up.row, 2);
   assert.equal(mark(done, { id: 'T1', key: '2026-11', status: '보류', note: '근거' }).op, 'none');
   assert.equal(mark(s, { id: 'T1', key: '2026-11', status: '미처리' }).op, 'none');
+  const noProof = { ...s, history: parseHistory([HISTORY_HEADER, ['T1', '2026-11', '완료', 'x', '', '2026-11-02']]) };
+  assert.equal(mark(noProof, { id: 'T1', key: '2026-11', status: '완료', note: '영수증' }).op, 'update');
+  assert.equal(mark(s, { id: 'T5', key: '2026', status: '완료', note: '미리 끝냄' }).op, 'append');
   const dup = { ...s, history: parseHistory([HISTORY_HEADER, ['T1', '2026-11', '완료', 'x', 'a', '2026-11-02'], ['T1', '2026-11', '완료', 'x', 'a', '2026-11-02']]) };
   assert.throws(() => mark(dup, { id: 'T1', key: '2026-11', status: '보류', note: 'x' }), /여럿/);
 });

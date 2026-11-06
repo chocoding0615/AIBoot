@@ -18,7 +18,7 @@ export const WINDOW = { before: 30, after: 60 };
 export const STATES = ['완료', '보류', '미처리'];
 export const HOLIDAY_ICS = 'https://calendar.google.com/calendar/ical/ko.south_korea.official%23holiday%40group.v.calendar.google.com/public/basic.ics';
 const TASK_RANGE = `'${TASK_TAB}'!A2:D200`;
-const HISTORY_RANGE = `'${HISTORY_TAB}'!A1:F2000`;
+const HISTORY_RANGE = `'${HISTORY_TAB}'!A:F`; // 행 제한 없음: 범위를 넘긴 기록이 미처리로 되돌아가면 안 된다
 
 const addDays = (ymd, n) => new Date(Date.parse(ymd + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
 const dayDiff = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
@@ -100,14 +100,14 @@ function firstBusinessDay(year, month, cal) {
 
 /** ymd 이전으로 n번째 영업일. ymd 자신은 세지 않는다. */
 function businessDaysBefore(ymd, n, cal) {
-  let d = ymd;
-  for (let left = n, guard = 0; left > 0 && guard < 120; guard++) {
+  let d = ymd, left = n;
+  for (let guard = 0; left > 0 && guard < 120; guard++) {
     d = addDays(d, -1);
     const b = cal.isBusiness(d);
     if (b === null) return null;
     if (b) left--;
   }
-  return d;
+  return left ? null : d;
 }
 
 /* ---------- 규칙표 ---------- */
@@ -221,7 +221,7 @@ export function occurrenceState(task, occ, history) {
   if (!STATES.includes(h.status)) return { state: '확인 필요', why: '상태 값 해석 불가' };
   if (h.status === '미처리') return { state: '미처리', why: '처리이력 미처리' };
   if (!h.hasNote) return { state: '확인 필요', why: `${h.status} 표시에 근거(비고) 없음` };
-  if (task.rule.kind !== 'first-business' && h.basis && occ.due && h.basis !== occ.due) return { state: '확인 필요', why: `기록 당시 기준일과 달라짐` };
+  if (task.rule.kind !== 'first-business' && h.basis !== occ.due) return { state: '확인 필요', why: h.basis ? '기록 당시 기준일과 달라짐' : '회차기준일 없음' };
   return { state: h.status, why: `처리이력 ${h.status}` };
 }
 
@@ -269,6 +269,8 @@ export async function readRecurringSource(api, spreadsheetId, log = () => {}) {
     try {
       const v = await api.values.get({ spreadsheetId, range: HISTORY_RANGE });
       historyHeader = (v.data.values || [])[0] || [];
+      // 열이 바뀐 표를 읽으면 상태를 잘못 해석하고 쓰기 도구가 다른 열을 덮어쓴다.
+      if (HISTORY_HEADER.some((h, i) => clean(historyHeader[i]) !== h)) throw new Error('머리글이 고정 열과 다름');
       history = parseHistory(v.data.values);
       historyState = '연결';
     } catch (e) { log('recurring history read failed: ' + e.message); historyState = '조회 실패'; }
