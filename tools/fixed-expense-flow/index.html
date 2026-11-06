@@ -1,450 +1,93 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AIBoot 고정비 업무 흐름</title>
+<title>AIBoot 연결현황</title>
 <style>
-  :root {
-    --accent: #2f5bd3; --accent-soft: #e8eefc;
-    --success: #1f7a4d; --success-soft: #e3f3ea;
-    --warning: #9a6200; --warning-soft: #fdf1d8;
-    --danger: #b3261e; --danger-soft: #fbe5e3;
-    --info: #5b4fc4; --info-soft: #ece9fb;
-    --text: #1d2330; --text-muted: #556070; --text-faint: #8a93a3;
-    --surface: #ffffff; --surface-alt: #f4f6f9; --border: #e1e5ec;
-    --radius: 10px; --radius-pill: 999px;
-    --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
-    --fs-title: 20px; --fs-head: 15px; --fs-body: 14px; --fs-meta: 12px;
+  :root { --bg:#f6f7f8; --panel:#fff; --line:#dfe3e7; --text:#1d2329; --sub:#5b6570; --ok:#1b7f4b; --check:#b4410e; --un:#5b6570; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.55 "Malgun Gothic","Apple SD Gothic Neo",sans-serif; }
+  main { max-width:960px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--sub); font-size:13px; }
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin:16px 0; }
+  .stat { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .stat b { display:block; font-size:24px; line-height:1.2; }
+  .stat.check b { color:var(--check); } .stat.ok b { color:var(--ok); }
+  .warn { background:#fff4ec; border:1px solid #f0c9ae; border-radius:8px; padding:10px 12px; margin:12px 0; font-size:14px; }
+  ul.tree, ul.tree ul { list-style:none; margin:0; padding:0; }
+  ul.tree { margin-top:12px; }
+  ul.tree ul { margin-left:12px; padding-left:12px; border-left:1px solid var(--line); }
+  .node { font-weight:700; padding:6px 0; }
+  details.v { background:var(--panel); border:1px solid var(--line); border-radius:8px; margin:6px 0; }
+  details.v[open] { border-color:#aeb6bf; }
+  summary { display:grid; grid-template-columns:minmax(120px,170px) 86px 78px 1fr; gap:10px; align-items:start; padding:9px 12px; cursor:pointer; list-style:none; }
+  summary::-webkit-details-marker { display:none; }
+  .name { font-weight:700; }
+  .badge { font-size:13px; font-weight:700; }
+  .정상 { color:var(--ok); } .확인 { color:var(--check); } .미검증 { color:var(--un); }
+  .why { color:var(--sub); font-size:14px; }
+  .col { font-size:13px; color:var(--sub); }
+  dl { margin:0; padding:2px 12px 12px; display:grid; grid-template-columns:110px 1fr; gap:4px 12px; font-size:14px; border-top:1px solid var(--line); }
+  dt { color:var(--sub); padding-top:6px; } dd { margin:0; padding-top:6px; }
+  .inactive { color:var(--sub); font-size:13px; margin:10px 0 0; }
+  @media (max-width:640px) {
+    .stats { grid-template-columns:repeat(2,1fr); }
+    summary { grid-template-columns:1fr auto; }
+    summary .col, summary .why { grid-column:1 / -1; }
   }
-  /* Use a stable light theme across Windows and Mac for report readability. */
-  * { box-sizing: border-box; }
-  body { margin: 0; font: var(--fs-body)/1.55 "Pretendard", "Malgun Gothic", system-ui, sans-serif; color: var(--text); background: var(--surface-alt); }
-  button { font: inherit; color: inherit; }
-  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  code { font: 12.5px/1.4 Consolas, monospace; background: var(--surface-alt); padding: 1px 5px; border-radius: 4px; }
-  a { color: var(--accent); }
-
-  header { padding: var(--s5) var(--s5) var(--s3); display: flex; flex-wrap: wrap; gap: var(--s3) var(--s5); align-items: baseline; }
-  h1 { font-size: var(--fs-title); margin: 0; }
-  .meta { color: var(--text-muted); font-size: var(--fs-meta); }
-  .banner { margin: 0 var(--s5) var(--s3); padding: var(--s3) var(--s4); border-radius: var(--radius); background: var(--warning-soft); color: var(--warning); }
-
-  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: var(--s4); padding: 0 var(--s5) var(--s6); align-items: start; }
-  @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } .panel { position: static !important; max-height: none !important; } }
-  .card { background: var(--surface); border-radius: var(--radius); padding: var(--s4) var(--s5); box-shadow: 0 1px 2px rgb(0 0 0 / .06); }
-  .stack > * + * { margin-top: var(--s4); }
-  h2 { font-size: var(--fs-head); margin: 0 0 var(--s3); }
-  .hint { color: var(--text-faint); font-size: var(--fs-meta); font-weight: 400; margin-left: var(--s2); }
-
-  /* status pill: icon + text, never color alone */
-  .pill { display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px; border-radius: var(--radius-pill); font-size: var(--fs-meta); font-weight: 600; white-space: nowrap; }
-  .st-ok { background: var(--success-soft); color: var(--success); }
-  .st-partial { background: var(--warning-soft); color: var(--warning); }
-  .st-none { background: var(--surface-alt); color: var(--text-muted); box-shadow: inset 0 0 0 1px var(--border); }
-  .st-manual { background: var(--info-soft); color: var(--info); }
-  .st-fail { background: var(--danger-soft); color: var(--danger); }
-  .st-unverified { background: var(--accent-soft); color: var(--accent); }
-  .st-inactive { background: transparent; color: var(--text-faint); box-shadow: inset 0 0 0 1px var(--border); text-decoration: line-through; }
-
-  /* questions */
-  .questions { display: flex; flex-wrap: wrap; gap: var(--s2); }
-  .q { border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius-pill); padding: 5px 12px; cursor: pointer; font-size: 13px; }
-  .q:hover { border-color: var(--accent); }
-  .q b { color: var(--accent); margin-right: 4px; }
-
-  /* flow */
-  .flow { display: grid; grid-template-columns: 1.35fr repeat(5, 1fr); gap: var(--s2); align-items: stretch; }
-  @media (max-width: 900px) { .flow { grid-template-columns: 1fr; } }
-  .node { position: relative; text-align: left; cursor: pointer; background: var(--surface-alt); border: 1px solid transparent; border-radius: var(--radius); padding: var(--s3); display: flex; flex-direction: column; gap: 6px; }
-  .node:hover { border-color: var(--border); }
-  .node.sel, .src.sel, tr.sel td { background: var(--accent-soft); }
-  .node.sel { border-color: var(--accent); }
-  .node .no { font-size: var(--fs-meta); color: var(--text-faint); font-weight: 600; }
-  .node .t { font-weight: 700; }
-  .node .sub { font-size: var(--fs-meta); color: var(--text-muted); }
-  .node:not(:last-child)::after { content: "→"; position: absolute; right: -14px; top: 50%; transform: translateY(-50%); color: var(--text-faint); z-index: 1; }
-  @media (max-width: 900px) { .node:not(:last-child)::after { content: "↓"; right: 50%; top: auto; bottom: -16px; } }
-  .sources { display: flex; flex-direction: column; gap: 6px; }
-  .src { display: flex; justify-content: space-between; gap: var(--s2); align-items: center; text-align: left; border: 0; background: var(--surface); border-radius: 8px; padding: 6px 8px; cursor: pointer; }
-  .src:hover { box-shadow: inset 0 0 0 1px var(--border); }
-  .src span:first-child { font-size: 13px; font-weight: 600; }
-
-  /* Operator-first layout and domain menu */
-  header { background: var(--surface); border-bottom:1px solid var(--border); margin-bottom:14px; }
-  .domain-nav { display:flex; flex-wrap:wrap; gap:8px; padding:0 24px 14px; }
-  .domain-btn { font:inherit; border:1px solid var(--border); background:var(--surface); border-radius:22px; padding:8px 15px; cursor:pointer; }
-  .domain-btn.is-active { background:var(--accent-soft); color:var(--accent); border-color:var(--accent); font-weight:700; }
-  .overview { margin:0 24px 16px; }
-  .overview .stats { grid-template-columns:repeat(auto-fit,minmax(165px,1fr)); }
-  .overview .stat { background:var(--surface-alt); padding:15px; border-radius:12px; border:1px solid var(--border); }
-  .overview .stat .v { font-size:27px; }
-  .insight-column { display:flex; flex-direction:column; gap:16px; min-width:0; }
-  .semantic-note { background:var(--accent-soft); padding:12px 14px; border-radius:9px; font-size:13px; margin:0 0 16px; }
-  .other-domain { margin:0 24px 24px; }
-  .other-domain[hidden],#fixedDomain[hidden] {display:none;}
-  .domain-cards {display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin:18px 0;}
-  .domain-card {border:1px solid var(--border);border-radius:10px;background:var(--surface-alt);padding:15px;}
-  .domain-card h3 {margin:0 0 10px;font-size:15px;}
-  .domain-card p {font-size:13px;color:var(--text-muted);}
-  /* summary */
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: var(--s3); }
-  .stat .v { font-size: 22px; font-weight: 700; }
-  .stat .l { font-size: var(--fs-meta); color: var(--text-muted); }
-
-  /* vendors */
-  .tabs { display: flex; gap: var(--s1); flex-wrap: wrap; margin-bottom: var(--s3); }
-  .tab { border: 0; background: transparent; padding: 4px 10px; border-radius: var(--radius-pill); cursor: pointer; color: var(--text-muted); }
-  .tab.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-  .scroll { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; }
-  th { text-align: left; font-size: var(--fs-meta); color: var(--text-faint); font-weight: 600; padding: 0 var(--s2) var(--s2); white-space: nowrap; }
-  td { padding: 7px var(--s2); vertical-align: middle; }
-  tbody tr { cursor: pointer; }
-  tbody tr:nth-child(even) td { background: var(--surface-alt); }
-  tbody tr:hover td { background: var(--accent-soft); }
-  td.num { color: var(--text-faint); font-size: var(--fs-meta); }
-  td.name { font-weight: 600; white-space: nowrap; }
-  tr.off td.name { color: var(--text-faint); }
-
-  .two { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s4); }
-  @media (max-width: 700px) { .two { grid-template-columns: 1fr; } }
-  ul.plain { margin: 0; padding-left: 18px; }
-  ul.plain li + li { margin-top: 4px; }
-  .legend { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); }
-  .legend div { display: flex; gap: var(--s2); align-items: center; font-size: var(--fs-meta); color: var(--text-muted); }
-  .finding + .finding { margin-top: var(--s3); }
-  .finding .ft { font-weight: 600; }
-  .finding .ref { font-size: var(--fs-meta); color: var(--text-faint); }
-
-  /* detail panel */
-  .panel { position: sticky; top: var(--s4); max-height: calc(100vh - 32px); overflow-y: auto; }
-  .panel h3 { margin: 0; font-size: 18px; }
-  .panel .kicker { font-size: var(--fs-meta); color: var(--text-faint); font-weight: 600; }
-  .answer { background: var(--accent-soft); border-radius: 8px; padding: var(--s3); margin: var(--s3) 0; }
-  .answer .qq { font-size: var(--fs-meta); color: var(--accent); font-weight: 600; }
-  dl { margin: var(--s3) 0 0; }
-  dt { font-size: var(--fs-meta); color: var(--text-faint); font-weight: 600; margin-top: var(--s3); }
-  dd { margin: 2px 0 0; }
-  .steps { display: flex; flex-direction: column; gap: var(--s2); margin-top: var(--s3); }
-  .step { background: var(--surface-alt); border-radius: 8px; padding: var(--s2) var(--s3); }
-  .step .row { display: flex; justify-content: space-between; gap: var(--s2); align-items: center; font-weight: 600; }
-  .step .why { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
-  .trace { counter-reset: t; list-style: none; padding: 0; margin: var(--s2) 0 0; }
-  .trace li { display: grid; grid-template-columns: 22px 1fr; gap: var(--s2); padding: 5px 0; }
-  .trace .mk { font-weight: 700; text-align: center; }
-  .trace .ok { color: var(--success); } .trace .stop { color: var(--danger); } .trace .ask { color: var(--warning); }
-  .trace small { display: block; color: var(--text-muted); }
-  .empty { color: var(--text-muted); }
-  select { font: inherit; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
-  .cmp { width: 100%; font-size: 13px; }
-  .cmp td, .cmp th { padding: 6px 4px; }
 </style>
 </head>
 <body>
-<header>
-  <h1>AIBoot 업무 연결 현황</h1>
-  <span class="meta" id="asof"></span>
-  <span class="meta" id="repo"></span>
-</header>
-<div id="banner"></div>
-<nav class="domain-nav" id="domainNav" aria-label="업무 분야">
-  <button class="domain-btn is-active" data-domain="fixed" aria-pressed="true">고정비</button>
-  <button class="domain-btn" data-domain="welfare" aria-pressed="false">복지</button>
-  <button class="domain-btn" data-domain="contracts" aria-pressed="false">계약서</button>
-  <button class="domain-btn" data-domain="licenses" aria-pressed="false">라이센스</button>
-  <button class="domain-btn" data-domain="recurring" aria-pressed="false">정기 업무</button>
-  <button class="domain-btn" data-domain="other" aria-pressed="false">기타 업무</button>
-</nav>
-<section class="card other-domain" id="otherDomain" hidden></section><div id="fixedDomain">
-
-<section class="card overview"><h2>고정비 연결 요약 <span class="hint">연결 여부이며 실제 업무 완료 건수가 아닙니다</span></h2><div class="stats" id="stats"></div></section>
-<div class="layout">
-  <main class="stack">
-    <section class="card">
-      <h2>질문으로 찾기<span class="hint">누르면 오른쪽에 답과 근거가 열립니다</span></h2>
-      <div class="questions" id="questions"></div>
-    </section>
-
-    <section class="card">
-      <h2>업무 흐름<span class="hint">단계·원본을 누르면 상세 설명</span></h2>
-      <div class="flow" id="flow"></div>
-    </section>
-
-    <section class="card">
-      <h2>업체별 기능 연결 상태<span class="hint">업체를 누르면 상세·누락 추적</span></h2>
-      <p class="semantic-note"><b>네 열은 서로 독립적인 기능 연결 상태입니다.</b> 납부일 계산 ≠ 실제 납부일 확정 · 연노랑 표시 읽기 ≠ 지출결의 완료 · 실제 지급은 별도 증빙 필요.</p>
-      <div class="tabs" id="tabs"></div>
-      <div class="scroll"><table>
-        <thead><tr><th>행</th><th>업체</th><th>업무 종류</th><th>납부 기준</th><th>납부 일정 계산</th><th>청구서 자동 조회</th><th>지출결의 표시 읽기</th><th>실제 지급 자동 확인</th></tr></thead>
-        <tbody id="vendors"></tbody>
-      </table></div>
-    </section>
-
-    <section class="card" id="division">
-      <h2>AIBoot가 하는 일 / 사람이 하는 일</h2>
-      <div class="two" id="divisionBody"></div>
-    </section>
-
-  </main>
-
-  <aside class="insight-column">
-    <div class="card panel" id="panel" aria-live="polite"></div>
-    <section class="card"><h2>확인된 문제 <span class="hint" id="findingsDate"></span></h2><div id="findings"></div></section>
-    <section class="card"><h2>상태 표시 기준</h2><div class="legend" id="legend"></div></section>
-  </aside>
-</div></div>
-
-<script src="flow-data.js"></script>
-<script src="evidence.local.js" onerror="window.AIBOOT_EVIDENCE = null"></script>
+<main id="app"></main>
+<script src="evidence.local.js"></script>
 <script>
-(() => {
-  const F = window.AIBOOT_FLOW, E = window.AIBOOT_EVIDENCE || null;
-  const $ = id => document.getElementById(id);
-  const OTHER_DOMAINS = {
-    welfare:{title:'복지',intro:'복지포인트 적용일과 지원 일정 관리',sources:[['복지포인트 적용일','[MS] AD_운영 관리 · 복지포인트 관리(연도)'],['처리 결과','기존 원본 및 사용자 확인 기록']],notes:['관련 PR #5에 원본 읽기 구현 기록','이 도구는 복지 분야 실조회 로그를 수집하지 않으므로 현재 연결 여부 미검증']},
-    contracts:{title:'계약서',intro:'계약 대장의 통지·갱신 기한 확인',sources:[['계약 관리 원본','실제 조회 경로는 이 화면에서 미검증'],['기한 분석','확정된 기한만 D-7 / D-30 / D-60으로 집계']],notes:['계약별 최신 원본 접근·성공 근거 미연결','근거 없는 만료·미갱신 판정 금지']},
-    licenses:{title:'라이센스',intro:'라이센스 갱신 예정과 완료 근거 확인',sources:[['라이센스 원본','실제 조회 경로는 이 화면에서 미검증'],['갱신 일정','원본의 실제 기한만 보고']],notes:['갱신 완료 이력과 기한은 별도 근거 필요','이 화면에 대한 실조회 증거 수집 후 상태 표시']},
-    recurring:{title:'정기 업무',intro:'법정의무교육·차량보험 등 반복 업무',sources:[['법정의무교육','[MS] HR_법정의무교육 · 법정의무교육 업체'],['차량보험','[MS] AD_운영 관리 · 법인차량목록'],['기타 정기 업무','기간이 등록된 기존 업무 기록']],notes:['관련 PR #5·#6에 원본 수집 개선 기록','재가입 완료와 보험기간 갱신은 서로 다른 확인 근거','분야별 실제 조회 증거는 이 도구에서 아직 미검증']},
-    other:{title:'기타 업무',intro:'Google Chat에서 파악된 비정기 업무',sources:[['Chat 메시지','지정 스페이스 읽기 권한이 필요한 데이터'],['기한 없는 업무','기한 미정으로 최초 1회 보고'],['이전 보고 후 누적','마지막 정상 조회·발송 기록 기준']],notes:['관련 PR #7에 누적 조회·OAuth 개선 기록','Chat API 권한 실패 시 실제 내용을 확인한 것으로 표시하지 않음','1회 보고는 완료 처리와 다름']}
-  };
-  function showDomain(id){
-    const isFixed=id==='fixed';
-    $('fixedDomain').hidden=!isFixed;
-    $('otherDomain').hidden=isFixed;
-    document.querySelectorAll('[data-domain]').forEach(b=>{const on=b.dataset.domain===id;b.classList.toggle('is-active',on);b.setAttribute('aria-pressed',String(on));});
-    if(isFixed||!OTHER_DOMAINS[id])return;
-    const d=OTHER_DOMAINS[id],e=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    $('otherDomain').innerHTML='<h2>'+e(d.title)+' · 업무 연결 상태 <span class="pill st-unverified">? 실조회 미검증</span></h2><p>'+e(d.intro)+'</p><div class="domain-cards">'+d.sources.map(([k,v])=>'<div class="domain-card"><h3>'+e(k)+'</h3><span class="pill st-unverified">? 실조회 근거 필요</span><p>'+e(v)+'</p></div>').join('')+'</div><h3>확인할 사항</h3><ul>'+d.notes.map(x=>'<li>'+e(x)+'</li>').join('')+'</ul><p class="meta">이 도구의 evidence.local.js는 고정비 근거만 수집합니다. 다른 분야는 실제 증거 연동 전까지 성공·실패 건수를 표시하지 않습니다.</p>';
-  }
-  $('domainNav').addEventListener('click',e=>{const b=e.target.closest('[data-domain]');if(b)showDomain(b.dataset.domain);});
-  const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  // `code` and **bold** in data strings
-  const md = s => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
-  const kst = iso => iso ? new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso)) : '—';
-  const pill = (st, text) => { const s = F.statuses[st]; return `<span class="pill st-${st}" title="${esc(s.desc)}"><span aria-hidden="true">${s.icon}</span>${esc(text || s.label)}</span>`; };
-  const norm = s => String(s).replace(/[\s()·]/g, '').toLowerCase();
-  const check = id => E?.checks.find(c => c.id === id);
-  const asOf = E ? `마지막 확인 기준 ${kst(E.generatedAt)}` : '마지막 확인 기준 없음';
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const when = iso => iso ? new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso)) : '-';
+const cls = s => s.split(' ')[0];
+const SLOT = { morning: '오전', afternoon: '오후' };
+const app = document.getElementById('app');
+const e = window.AIBOOT_EVIDENCE;
 
-  /* ---------- dynamic status (evidence-based; no evidence ⇒ 미검증) ---------- */
-  const regularSends = (E?.sends || []).filter(s => !s.test);
-  const lastRegular = regularSends[0];
-  const failedChecks = (E?.checks || []).filter(c => !c.ok);
-  const sheetsSt = !E ? 'unverified' : E.sheets.lastOk && (!E.sheets.lastFail || E.sheets.lastFail.at < E.sheets.lastOk.at) ? 'ok' : E.sheets.lastFail ? 'fail' : 'unverified';
-  const dyn = {
-    sheets: sheetsSt,
-    schedule: !E || E.schedule.error ? 'unverified' : 'ok',
-    gmail: check('gmailOff')?.ok ? 'none' : 'unverified',
-    chat: !E?.chat.last ? 'unverified' : E.chat.last.ok ? 'ok' : 'fail',
-    ai: !E ? 'unverified' : (E.reports || []).some(r => r.sent === 'sent') ? 'ok' : 'unverified',
-    validate: !E ? 'unverified' : failedChecks.length ? 'unverified' : 'ok',
-    send: !lastRegular ? 'unverified' : lastRegular.status === 'sent' ? 'ok' : lastRegular.status === 'failed' ? 'fail' : 'unverified'
-  };
-  const statusOf = s => s?.startsWith('dyn:') ? dyn[s.slice(4)] : s;
-  const sendLine = s => `${s.key.replace(/\|/g, ' · ')} — ${s.status}${s.cards ? ` (카드 ${s.cards}장)` : ''} · ${kst(s.at)}${s.error ? ` · ${s.error}` : ''}`;
+// 확인 필요를 맨 위로, 같은 상태끼리는 원본 행 순서.
+const RANK = { '확인 필요': 0, '미검증': 1, '정상': 2 };
+const byUrgency = (a, b) => RANK[a.status] - RANK[b.status] || a.row - b.row;
 
-  const dynText = {
-    rangeJP: () => check('rangeJP')?.value ? `\`'JP매월 지출'!${check('rangeJP').value}\` — 코드에서 직접 확인(${asOf})` : '근거 파일 없음 — build-evidence.mjs 실행 필요',
-    rangeDaily: () => check('rangeDaily')?.value ? `\`'AIBoot_데일리마감'!${check('rangeDaily').value}\` — 코드에서 직접 확인` : '미검증',
-    vendorCount: () => E?.schedule.docRows ? `규칙 문서 표 ${E.schedule.docRows}개 업체(시트 14~36행) 중 활성 ${E.schedule.active.length}개. 비활성: ${E.schedule.excluded.join(', ')}. 업체 목록은 아래 “업체별 연결 상태”` : '미검증',
-    scheduleSummary: () => E?.schedule.error ? `계산 실패: ${E.schedule.error}` : E ? `실행기 함수를 그대로 실행한 결과 ${E.schedule.docRows}행 → 활성 ${E.schedule.active.length}개, 이 중 예정일 계산 ${E.schedule.active.filter(a => a.day).length}개 (${asOf})` : '미검증',
-    gmailCode: () => check('gmailOff')?.ok ? '`sources[\'회사 Gmail\'] = \'미연결\'` 고정, Gmail API 호출 코드 없음 (코드에서 직접 확인)' : '코드 변경 감지 — 재검토 필요',
-    chatDetail: () => E?.chat.last ? `${E.chat.last.ok ? '연결' : '조회 실패: ' + E.chat.last.code} · ${kst(E.chat.last.at)}${E.chat.last.ok ? '' : ' — OAuth 프로젝트의 Google Chat API 사용 설정 필요(CURRENT.md). 실패 시 보고에 메시지 내용을 쓰지 않음'}` : '기록 없음',
-    repoInfo: () => E ? `\`${E.repo.path}\` 의 브랜치 \`${E.repo.branch}\` (작업 폴더 파일을 직접 실행 — main 아님)` : '미검증',
-    sheetsDetail: () => E?.sheets.lastOk ? `시트 읽기 성공 ${kst(E.sheets.lastOk.at)} (${E.sheets.lastOk.slot}, 스냅샷 ${E.sheets.lastOk.chars.toLocaleString()}자, 누적 ${E.sheets.okCount}회)${E.sheets.lastFail ? ` · 마지막 실패 ${kst(E.sheets.lastFail.at)}` : ' · 실패 기록 없음'}` : '기록 없음',
-    undated: () => E ? (E.schedule.active.filter(a => !a.day).map(a => a.vendor).join(', ') || '없음') + ' — 예정일을 계산하지 않음. 시트·스페이스 메시지에 구체 근거가 없으면 보고하지 말라고 지시하고 검증에서도 차단' : '미검증',
-    imminent: () => E ? `${E.schedule.asOf} ~ ${E.schedule.windowEnd}: ` + (E.schedule.imminent.map(i => `${i.vendor} ${i.date.slice(5)}`).join(', ') || '없음') + ' (규칙상 예정일, 처리 여부 미반영)' : '미검증',
-    aiDetail: () => E ? (E.reports.map(r => `${r.file.replace('.md', '')} — ${r.sent || '기록 없음'}`).join('<br>') || '저장된 정규 보고 없음') + (E.agentErrors.length ? `<br>최근 AI·검증 오류: ${esc(E.agentErrors[0].key)} · ${esc(E.agentErrors[0].reason)}` : '') : '미검증',
-    easyCheck: () => check('easySched') && check('easyValidate') ? `일정 계산에서 제외 ${check('easySched').ok ? '✓' : '✕'} · 본문에 “이지화물”이 있으면 발송 차단 ${check('easyValidate').ok ? '✓' : '✕'} (코드에서 직접 확인)` : '미검증',
-    failures: () => E?.agentErrors.length ? E.agentErrors.slice(0, 4).map(e => `${kst(e.at)} ${esc(e.key)}: ${esc(e.reason)}`).join('<br>') : '기록 없음',
-    sends: () => E ? (regularSends.slice(0, 4).map(sendLine).map(esc).join('<br>') || '정규 발송 기록 없음') + (E.sends.find(s => s.test && s.cards) ? `<br>최근 카드 발송(테스트): ${esc(sendLine(E.sends.find(s => s.test && s.cards)))}` : '') : '미검증'
-  };
-  // These dynText entries already return escaped HTML; the rest return markdown-ish text.
-  const HTML_DYN = new Set(['aiDetail', 'failures', 'sends']);
-  const valHtml = v => {
-    if (typeof v !== 'string' || !v.startsWith('dyn:')) return md(v);
-    const k = v.slice(4), out = dynText[k]?.() ?? '—';
-    return HTML_DYN.has(k) ? out : md(out);
-  };
+function vendor(i) {
+  const rows = [['원본 연결', `${i.source.state} — ${i.source.text}`], ['대상 회차', i.target || '-'], ['사용기간', i.period], ['납부 기준', i.basisRule],
+    ['청구서 경로', i.path], ['실제 점검시각', when(i.checkedAt)], ['판정 이유', i.reason], ...(i.notes || []).map(n => ['참고', n])];
+  return `<li><details class="v"><summary>
+    <span class="name">${esc(i.vendor)}</span>
+    <span class="col">원본 ${esc(i.source.state)}</span>
+    <span class="badge ${cls(i.status)}">${esc(i.status)}</span>
+    <span class="why"><b>${esc(i.report)}</b> · ${esc(i.reason)}</span>
+  </summary><dl>${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl></details></li>`;
+}
 
-  /* ---------- vendor steps ---------- */
-  const sched = name => E?.schedule.active.find(a => a.vendor === name);
-  const imminentOf = name => E?.schedule.imminent.find(i => i.vendor === name);
-  function steps(v) {
-    if (v.inactive) {
-      const why = '비활성 — 일정 계산·보고 대상에서 제외';
-      return { schedule: ['inactive', why], invoice: ['inactive', why], approval: ['inactive', why], payment: ['inactive', why] };
-    }
-    const s = sched(v.name);
-    let schedule;
-    if (!E) schedule = ['unverified', '근거 파일 없음'];
-    else if (!s) schedule = ['fail', '실행기 계산 결과에 없음 — 문서 표·업체명 확인 필요'];
-    else if (!s.day) schedule = ['manual', '실행기가 예정일을 계산하지 않음(고지서 기준) — 사람이 고지서로 확인'];
-    else if (v.scheduleOverride) schedule = [v.scheduleOverride, `매월 ${s.day}일로 계산됨 — ${v.note}`];
-    else schedule = ['ok', `규칙 계산: 매월 ${s.day}일 (문서 “${v.basis}”)`];
-    const invoice = v.invoice === 'gmail' ? ['none', `청구서는 ${v.path}로 오지만 실행기에 Gmail 읽기 기능 없음 → 사람이 메일함 확인`]
-      : v.invoice === 'excluded' ? ['inactive', '규칙상 청구서 확인 작업만 제외(다른 관리 업무는 유지)']
-      : ['manual', `${v.path} — 자동 수집 경로 없음, 사람이 확인`];
-    const approval = [sheetsSt, sheetsSt === 'ok' ? 'JP매월 지출 셀 배경 연노랑을 읽어 AI에 전달(= 지출결의 제출 표시, 결재·납부 아님)' : '시트 읽기 근거 없음'];
-    const payment = ['unverified', v.confirmed ? `자동 확인 없음. 사용자 확인 기록: ${v.confirmed}` : '은행·이체내역 연결 없음. 완료 기록 경로(AIBoot_데일리마감 ← Chat 앱)는 앱 미배포로 실제 기록 근거 없음'];
-    return { schedule, invoice, approval, payment };
-  }
-  const mentions = name => (E?.reports || []).map(r => ({ file: r.file.replace('.md', ''), sent: r.sent, chat: r.inChat.includes(name), internal: r.inInternal.includes(name) }));
-
-  /* ---------- render: header, questions, flow ---------- */
-  $('asof').textContent = E ? `${asOf} · 실시간 조회 아님` : '근거 파일(evidence.local.js) 없음 — 모든 실행 상태는 미검증으로 표시';
-  $('repo').innerHTML = E ? `실행 코드: <code>${esc(E.repo.branch)}</code>` : '';
-  const banners = [];
-  if (!E) banners.push('이 PC에서 <code>node build-evidence.mjs --repo &lt;AIBoot 운영 폴더&gt;</code>를 실행하면 마지막 조회·발송 근거가 표시됩니다.');
-  if (failedChecks.length) banners.push(`실행기 코드가 이 화면을 만든 시점과 달라졌습니다: ${failedChecks.map(c => esc(c.label)).join(', ')} — 설명을 재검토하세요.`);
-  if (E?.schedule.error) banners.push('일정 계산 재현 실패: ' + esc(E.schedule.error));
-  $('banner').innerHTML = banners.map(b => `<div class="banner">${b}</div>`).join('');
-
-  const active = F.vendors.filter(v => !v.inactive);
-  const QUESTIONS = [
-    ['1', '고정비 23개 중 활성은?', () => select('source', 'doc', `원본 표 ${F.vendors.length}개 중 활성 ${active.length}개 (비활성: ${F.vendors.filter(v => v.inactive).map(v => v.name).join(', ')})${E ? ` — 실행기 계산 결과도 ${E.schedule.docRows}행 → ${E.schedule.active.length}개로 일치` : ''}`)],
-    ['2', '알고퀵·Sendy·이지화물 상태', () => select('compare', '운송비')],
-    ['3', '알고퀵 청구서 자동 확인?', () => select('vendor', '알고퀵', '아니요. 납부 일정(매월 10일)은 자동 계산되지만, 청구서는 회사 Gmail로 오고 실행기에 Gmail 읽기 기능이 없어 “미연결”입니다. 사람이 메일함에서 확인합니다.')],
-    ['4', '이지화물은 보고에서 제외?', () => select('vendor', '이지화물', `예. 일정 계산에서 제외되고, 보고 본문에 “이지화물”이 들어가면 검증 단계가 발송을 막습니다.${E ? ` 최근 정규 보고 ${E.reports.length}건의 보고 본문에 이지화물 언급: ${E.reports.filter(r => r.inChat.includes('이지화물')).length}건.` : ''}`)],
-    ['5', 'JP매월 지출 읽는 범위', () => select('source', 'jp', check('rangeJP')?.value ? `'JP매월 지출'!${check('rangeJP').value} 전체 셀의 표시값과 배경색(연노랑)만 읽습니다. 코드가 열을 해석하지 않고 원문을 AI에 넘기며, 업체별 예정일은 시트가 아니라 규칙 문서에서 계산합니다.` : '근거 파일 없음')],
-    ['6', '자동 vs 사람 처리 구분', () => { $('division').scrollIntoView({ behavior: 'smooth' }); select('stage', 'calc', '아래 “AIBoot가 하는 일 / 사람이 하는 일”에 정리했습니다. 요약: 읽기·일정 계산·검증·발송은 자동, 청구서 확인·결재·지급 확인·완료 기록은 사람.'); }],
-    ['7', '특정 업체가 보고서에서 빠졌다면?', () => select('trace', active[2].name)]
-  ];
-  $('questions').innerHTML = QUESTIONS.map(([n, q], i) => `<button class="q" data-q="${i}"><b>Q${n}</b>${esc(q)}</button>`).join('');
-  $('questions').onclick = e => { const b = e.target.closest('[data-q]'); if (b) QUESTIONS[b.dataset.q][2](); };
-
-  const srcHtml = F.sources.map(s => `<button class="src" data-kind="source" data-id="${s.id}"><span>${esc(s.title)}</span>${pill(statusOf(s.status))}</button>`).join('');
-  $('flow').innerHTML =
-    `<div class="node" data-kind="stage" data-id="sources"><span class="no">①</span><span class="t">원본 데이터</span><div class="sources">${srcHtml}</div></div>` +
-    F.stages.map(s => `<button class="node" data-kind="stage" data-id="${s.id}"><span class="no">${'①②③④⑤⑥'[s.no - 1]}</span><span class="t">${esc(s.title)}</span><span class="sub">${esc(s.sub)}</span>${pill(statusOf(s.status))}</button>`).join('');
-  $('flow').onclick = e => { const b = e.target.closest('[data-kind]'); if (b) select(b.dataset.kind, b.dataset.id); };
-
-  /* ---------- stats, vendor table ---------- */
-  const all = F.vendors.map(v => ({ v, st: steps(v) }));
-  const cnt = k => all.filter(x => !x.v.inactive && x.st[k][0] === 'ok').length;
-  $('stats').innerHTML = [
-    [F.vendors.length, '원본 업체(문서 표)'], [active.length, '활성 관리 업체'],
-    [E ? cnt('schedule') : '?', '납부 일정 계산 연결'],
-    [cnt('invoice'), '청구서 자동 조회 연결'], [cnt('payment'), '실제 지급 자동 검증 연결']
-  ].map(([v, l]) => `<div class="stat"><div class="v">${v}</div><div class="l">${esc(l)}</div></div>`).join('');
-
-  const FILTERS = { '전체': () => true, '운송비': x => x.v.kind === '운송비', '일정 확인 필요': x => ['partial', 'manual', 'fail'].includes(x.st.schedule[0]), '청구서 사람 확인': x => ['none', 'manual'].includes(x.st.invoice[0]), '사용자 확인 기록': x => !!x.v.confirmed, '비활성': x => x.v.inactive };
-  let filter = '전체';
-  function renderVendors() {
-    $('tabs').innerHTML = Object.keys(FILTERS).map(k => `<button class="tab ${k === filter ? 'on' : ''}" data-f="${k}">${k} ${all.filter(FILTERS[k]).length}</button>`).join('');
-    $('vendors').innerHTML = all.filter(FILTERS[filter]).map(({ v, st }) =>
-      `<tr data-kind="vendor" data-id="${esc(v.name)}" class="${v.inactive ? 'off' : ''}"><td class="num">${v.row}</td><td class="name">${esc(v.name)}</td><td>${esc(v.kind)}</td><td>${esc(v.basis)}</td>` +
-      ['schedule', 'invoice', 'approval', 'payment'].map(k => `<td title="${esc(st[k][1])}">${pill(st[k][0])}</td>`).join('') + '</tr>').join('');
-  }
-  $('tabs').onclick = e => { const b = e.target.closest('[data-f]'); if (b) { filter = b.dataset.f; renderVendors(); } };
-  $('vendors').onclick = e => { const r = e.target.closest('tr[data-id]'); if (r) select('vendor', r.dataset.id); };
-  renderVendors();
-
-  $('divisionBody').innerHTML = `<div><h2>AIBoot 자동</h2><ul class="plain">${F.division.auto.map(x => `<li>${md(x)}</li>`).join('')}</ul></div>` +
-    `<div><h2>사람(담당자)</h2><ul class="plain">${F.division.human.map(x => `<li>${md(x)}</li>`).join('')}</ul></div>`;
-  $('findingsDate').textContent = `${F.investigatedAt} 조사 기준`;
-  $('findings').innerHTML = F.findings.map(f => `<div class="finding"><div class="ft">${pill(f.level === 'warn' ? 'partial' : 'unverified', f.level === 'warn' ? '주의' : '참고')} ${esc(f.title)}</div><div>${md(f.body)}</div><div class="ref">근거: ${esc(f.ref)}</div></div>`).join('');
-  $('legend').innerHTML = Object.entries(F.statuses).map(([k, s]) => `<div>${pill(k)}<span>${esc(s.desc)}</span></div>`).join('') +
-    `<div><span>실시간 조회가 아니며, 모든 실행 상태는 “${esc(asOf)}”의 로그·원장·코드 기준</span></div>`;
-
-  /* ---------- detail panel ---------- */
-  const sheetLink = row => `${F.sheetUrl}${row ? `&range=A${row}:V${row}` : ''}`;
-  const answer = text => text ? `<div class="answer"><div class="qq">답</div>${md(text).replace(/\n/g, '<br>')}</div>` : '';
-  const dlist = items => `<dl>${items.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${valHtml(v)}</dd>`).join('')}</dl>`;
-
-  function vendorPanel(v, ans) {
-    const st = steps(v), s = sched(v.name), imm = imminentOf(v.name), ms = mentions(v.name);
-    const auto = [!v.inactive && s?.day && `이번 달 규칙상 예정일(${s.day}일) 계산`, !v.inactive && `7일 이내면 임박 목록에 넣어 AI에 전달`, !v.inactive && sheetsSt === 'ok' && '시트 연노랑(지출결의 표시) 읽기', v.inactive && '일정 계산 제외 + 보고 본문 언급 시 발송 차단'].filter(Boolean);
-    const human = v.inactive ? ['없음(관리 종료)'] : [st.invoice[0] !== 'inactive' && `청구서 확인: ${v.path}`, !s?.day && '고지서로 실제 인출예정일 확인', v.scheduleOverride && '실제 해당 회차인지 판단', '지출결의·전자결재', '실제 지급·출금 확인', '완료 사실을 AIBoot에 알림(현재 Chat 앱 미배포)'].filter(Boolean);
-    return `<div class="kicker">업체 · 시트 ${v.row}행</div><h3>${esc(v.name)}</h3>${answer(ans)}
-      <div class="steps">${['schedule', 'invoice', 'approval', 'payment'].map(k => `<div class="step"><div class="row"><span>${F.stepNames[k]}</span>${pill(st[k][0])}</div><div class="why">${md(st[k][1])}</div></div>`).join('')}</div>
-      ${dlist([
-        ['업무 종류', v.kind], ['사용기간', v.period], ['납부·처리 기준일', v.basis + (s?.day ? ` → 실행기 계산: 매월 ${s.day}일` : '')],
-        ['오늘 기준 임박 여부', !E ? '미검증' : v.inactive ? '대상 아님(비활성)' : imm ? `임박: ${imm.date} (${E.schedule.asOf}~${E.schedule.windowEnd} 창 안)` : `임박 아님 (${E.schedule.asOf}~${E.schedule.windowEnd} 창 밖)`],
-        ['원본 자료', `JP매월 지출 ${v.row}행 · docs/FIXED-EXPENSES-V1.md 표 · 청구서: ${v.path}`],
-        ['자동 처리 범위', auto.join(' · ') || '없음'], ['사람이 처리', human.join(' · ')],
-        ['보고에 포함되는 조건', v.inactive ? '포함되지 않음 — 본문에 있으면 발송 자체가 차단됨' : `규칙상 예정일이 오늘~7일 안이고, AI가 시트(연노랑·데일리마감)와 운영 기준으로 “아직 처리 안 됨”이라 판단하면 오늘 남은 일 [고정비]에 표시${s?.day ? '' : '. 단, 예정일 미확정이라 시트·스페이스에 구체 근거가 있을 때만'}`],
-        ['메모', v.note || '—']
-      ])}
-      <dt>최근 정규 보고 언급 <span class="hint">${esc(asOf)}</span></dt>
-      <dd>${ms.length ? ms.map(m => `${esc(m.file)}: 보고 본문 ${m.chat ? '있음' : '없음'} · 내부 기록 ${m.internal ? '있음' : '없음'}`).join('<br>') : '근거 없음'}</dd>
-      <p><a href="${sheetLink(v.row)}" target="_blank" rel="noopener">원본 시트 ${v.row}행 열기 ↗</a> · <a href="#" data-trace="${esc(v.name)}">이 업체 누락 추적 →</a></p>`;
-  }
-
-  function tracePanel(name) {
-    const v = F.vendors.find(x => x.name === name), s = sched(name), imm = imminentOf(name), ms = mentions(name);
-    const lastRep = ms[0];
-    const L = [];
-    const add = (state, text, sub) => L.push(`<li><span class="mk ${state}">${state === 'ok' ? '✓' : state === 'stop' ? '■' : '?'}</span><div>${md(text)}${sub ? `<small>${md(sub)}</small>` : ''}</div></li>`);
-    add('ok', `① 원본 표에 있음 — 시트 ${v.row}행 / 규칙 문서 표`);
-    if (v.inactive) { add('stop', '② 비활성 업체 → 여기서 제외됨(정상)', '일정 계산에서 빠지고, 본문에 쓰면 검증에서 발송 차단'); }
-    else {
-      add('ok', '② 활성 업체');
-      if (!E) add('ask', '③ 예정일 계산 — 근거 파일 없음');
-      else if (!s) add('stop', '③ 실행기 계산 결과에 없음', '문서 표의 업체명·행 형식이 깨졌는지 확인');
-      else if (!s.day) add('stop', '③ 예정일을 계산하지 않는 업체 → 근거가 없으면 보고하지 않음(정상)', '고지서 인출예정일이 시트나 스페이스 메시지에 적혀 있어야 보고됨');
-      else {
-        add('ok', `③ 예정일 계산: 매월 ${s.day}일`);
-        if (!imm) add('stop', `④ 오늘 기준 7일 창(${E.schedule.asOf}~${E.schedule.windowEnd}) 밖 → 오늘 남은 일에 안 나옴(정상)`, '다음 근무일 업무·요약에는 AI 판단으로 나올 수 있음');
-        else {
-          add('ok', `④ 임박 목록에 들어감 (${imm.date})`);
-          add('ask', '⑤ AI가 이미 처리됨으로 판단해 뺐는지 확인', `보고 원문의 \`=== INTERNAL ===\` 부분(제외 항목과 이유)을 본다: %USERPROFILE%\\.aiboot\\reports\\날짜-시간대-agent.md · 원인 후보: 시트 연노랑, AIBoot_데일리마감 기록, CURRENT.md 사용자 확인${lastRep ? ` · 최신 ${lastRep.file}: 본문 ${lastRep.chat ? '있음' : '없음'}, 내부 기록 ${lastRep.internal ? '있음' : '없음'}` : ''}`);
-        }
-      }
-      add('ask', '⑥ 검증 실패로 보고 전체가 발송되지 않았는지', E?.agentErrors.length ? `최근 실패: ${E.agentErrors[0].key} — ${E.agentErrors[0].reason}` : '최근 실패 기록 없음');
-      add('ask', '⑦ 발송 기록(ledger) 확인', lastRegular ? `최근 정규 발송: ${sendLine(lastRegular)}` : '정규 발송 기록 없음');
-    }
-    return `<div class="kicker">누락 추적</div><h3>보고서에서 빠졌다면</h3>
-      <p class="meta">위에서부터 순서대로 확인합니다. ■에서 멈춘 경우 그 단계에서 빠진 것입니다.</p>
-      <label>업체 <select id="traceSel">${F.vendors.map(x => `<option ${x.name === name ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
-      <ol class="trace">${L.join('')}</ol>`;
-  }
-
-  function comparePanel(kind) {
-    const vs = all.filter(x => x.v.kind === kind);
-    return `<div class="kicker">비교</div><h3>${esc(kind)} 업체 상태</h3>
-      ${answer(vs.map(({ v, st }) => `**${v.name}**: ${v.inactive ? '비활성(2026-10 종료, 계산·보고 제외)' : `납부 일정 ${F.statuses[st.schedule[0]].label} · 청구서 자동 확인 ${F.statuses[st.invoice[0]].label} · 실제 지급 확인 ${F.statuses[st.payment[0]].label}`}`).join('\n'))}
-      <table class="cmp"><thead><tr><th></th>${vs.map(x => `<th>${esc(x.v.name)}</th>`).join('')}</tr></thead><tbody>
-      ${['schedule', 'invoice', 'approval', 'payment'].map(k => `<tr><td>${F.stepNames[k]}</td>${vs.map(x => `<td>${pill(x.st[k][0])}</td>`).join('')}</tr>`).join('')}
-      </tbody></table><p class="meta">업체 이름을 누르면 상세가 열립니다.</p>
-      <p>${vs.map(x => `<a href="#" data-vendor="${esc(x.v.name)}">${esc(x.v.name)} 상세 →</a>`).join(' · ')}</p>`;
-  }
-
-  function select(kind, id, ans) {
-    document.querySelectorAll('.sel').forEach(n => n.classList.remove('sel'));
-    let html;
-    if (kind === 'vendor') { const v = F.vendors.find(x => x.name === id); html = vendorPanel(v, ans); document.querySelector(`tr[data-id="${CSS.escape(id)}"]`)?.classList.add('sel'); }
-    else if (kind === 'trace') html = tracePanel(id);
-    else if (kind === 'compare') html = comparePanel(id);
-    else if (kind === 'source') {
-      const s = F.sources.find(x => x.id === id);
-      html = `<div class="kicker">① 원본 데이터 · ${esc(s.sub)}</div><h3>${esc(s.title)}</h3><p>${pill(statusOf(s.status))} <span class="meta">${esc(asOf)}</span></p>${answer(ans)}${dlist(s.items)}` +
-        (s.link ? `<p><a href="${sheetLink()}" target="_blank" rel="noopener">원본 시트 열기 ↗</a></p>` : '');
-      document.querySelector(`.src[data-id="${id}"]`)?.classList.add('sel');
-    } else if (id === 'sources') {
-      html = `<div class="kicker">① 원본 데이터</div><h3>AIBoot가 고정비 판단에 쓰는 자료</h3>${answer(ans)}<div class="steps">${F.sources.map(s => `<div class="step"><div class="row"><a href="#" data-src="${s.id}">${esc(s.title)}</a>${pill(statusOf(s.status))}</div><div class="why">${esc(s.sub)}</div></div>`).join('')}</div>
-        <p class="meta">운송료DB 등 같은 문서의 다른 탭은 실행기 코드에 읽기 범위가 없어 연결되어 있지 않습니다.</p>`;
-    } else {
-      const s = F.stages.find(x => x.id === id);
-      html = `<div class="kicker">${'①②③④⑤⑥'[s.no - 1]} 처리 단계 · ${esc(s.sub)}</div><h3>${esc(s.title)}</h3><p>${pill(statusOf(s.status))} <span class="meta">${esc(asOf)}</span></p>${answer(ans)}${dlist(s.items)}`;
-    }
-    if (kind === 'stage') document.querySelector(`.node[data-id="${id}"]`)?.classList.add('sel');
-    $('panel').innerHTML = html;
-    if (window.innerWidth <= 1100) $('panel').scrollIntoView({ behavior: 'smooth' });
-  }
-  $('panel').onclick = e => {
-    const a = e.target.closest('a[data-trace],a[data-vendor],a[data-src]');
-    if (!a) return;
-    e.preventDefault();
-    if (a.dataset.trace) select('trace', a.dataset.trace);
-    else if (a.dataset.vendor) select('vendor', a.dataset.vendor);
-    else select('source', a.dataset.src);
-  };
-  $('panel').onchange = e => { if (e.target.id === 'traceSel') select('trace', e.target.value); };
-
-  select('stage', 'sources', `고정비 판단의 실제 원천은 3가지입니다: JP매월 지출(시트 원문·연노랑), AIBoot_데일리마감(완료 기록), FIXED-EXPENSES-V1.md(예정일 계산). Gmail은 미연결입니다.`);
-})();
+if (!e || !e.domains) {
+  app.innerHTML = `<h1>AIBoot 연결현황</h1><div class="warn">점검 결과 파일이 없어 모든 업체가 <b>미검증</b>입니다. 이 폴더에서 <code>node build-evidence.mjs</code>를 실행한 뒤 새로 고치세요.</div>`;
+} else {
+  const d = e.domains[0], s = d.summary;
+  const warnings = [...d.warnings, ...(e.scheduleError ? [e.scheduleError] : []),
+    ...e.checks.filter(c => !c.ok).map(c => `실행기 코드 확인 실패: ${c.label}`),
+    ...e.errors.filter(x => e.report && x.key.startsWith(`${e.report.date}|${e.report.slot}|`) && !x.key.includes('|test')).map(x => `기준 보고 실패 기록(${x.key.split('|')[2]}): ${x.reason}`)];
+  app.innerHTML = `
+    <h1>AIBoot 연결현황</h1>
+    <div class="sub">고정비가 보고에 없을 때 정상 제외인지 누락 의심인지 확인합니다. 판정 기준 코드: ${esc(e.repo.branch)}</div>
+    <div class="stats">
+      <div class="stat"><b>${s.total}</b>관리대상</div>
+      <div class="stat ok"><b>${s.ok}</b>정상</div>
+      <div class="stat check"><b>${s.check}</b>확인 필요</div>
+      <div class="stat"><b>${s.unverified}</b>미검증</div>
+    </div>
+    <div class="sub">최근 점검 ${when(e.generatedAt)} · 기준 보고 ${e.report ? `${esc(e.report.date)} ${SLOT[e.report.slot]} (${esc(e.report.agents.join('·'))})` : '없음'} · 점검 창 ~${esc(d.windowEnd.slice(5).replace('-', '/'))}</div>
+    ${warnings.length ? `<div class="warn">${warnings.map(esc).join('<br>')}</div>` : ''}
+    <ul class="tree"><li><div class="node">AIBoot</div><ul>
+      ${e.domains.map(x => `<li><div class="node">${esc(x.name)} (${x.items.length}개)</div><ul>${[...x.items].sort(byUrgency).map(vendor).join('')}</ul></li>`).join('')}
+    </ul></li></ul>
+    ${d.inactive.length ? `<p class="inactive">비활성 이력(관리대상 제외): ${d.inactive.map(esc).join(', ')}</p>` : ''}`;
+}
 </script>
 </body>
 </html>
