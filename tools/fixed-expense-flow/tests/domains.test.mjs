@@ -232,3 +232,9 @@ test('정기 업무: 새로 추가돼 업무ID가 없는 행은 정상으로 보
   assert.equal(r.items[0].status, STATUS.check);
   assert.match(r.items[0].reason, /업무ID 미지정/);
 });
+
+test('정기 업무: 처리이력 탭이 아직 없어도 업무ID 없는 행은 확인 필요', () => {
+  const tasks = parseTasks([['새 업무', '1회', '2026-11-16']]);
+  const r = judgeRecurring({ tasks, history: new Map(), historyState: '미생성', calendar }, [], { report: both({ '[정기 업무]': '- 11/16 새 업무' }), today });
+  assert.equal(r.items[0].status, STATUS.check);
+});

@@ -54,3 +54,13 @@ test('보고 누락 검사: 회차마다 업무명과 날짜가 있어야 함 (�
   assert.deepEqual(recurringOmissions(rec.slice(0, 1), ['- 11/20 생각공장 주차권 구매']), ['생각공장 주차권 구매 11/02']);
   assert.deepEqual(recurringOmissions([], ['- 해당 없음']), []);
 });
+
+test('누락 검사: 공백·영문 업무명, 연도까지 적힌 날짜', () => {
+  const rec = ['Alpha Beta: 2026-11-16 (D-7) — 완료 여부 확인 필요'];
+  assert.deepEqual(recurringOmissions(rec, ['- 11/16 AlphaBeta']), []);
+  assert.deepEqual(recurringOmissions(['Tasks: 2026-11-16 (D-7) — x'], ['- 11/16 Task']), ['Tasks 11/16']);
+  assert.deepEqual(recurringOmissions(rec, ['- 2027-11-16 Alpha Beta']), ['Alpha Beta 11/16']);
+  assert.deepEqual(recurringOmissions(rec, ['- 2026년 11월 16일 Alpha Beta']), []);
+  assert.deepEqual(recurringOmissions(rec, ['- 2026/11/16 Alpha Beta']), []);
+  assert.deepEqual(recurringOmissions(rec, ['- 16일: Alpha Beta']), ['Alpha Beta 11/16']);
+});

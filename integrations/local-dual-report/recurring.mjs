@@ -252,7 +252,7 @@ export function recurringLines(source, cal, today) {
   return lines;
 }
 
-const norm = s => String(s).replace(/[s()·]/g, '').toLowerCase(); // runner.mjs norm과 같다
+const norm = s => String(s).replace(/[\s()·]/g, '').toLowerCase(); // runner.mjs norm과 같다
 /**
  * 계산된 정기 업무 회차가 보고 줄에 업무명과 날짜로 모두 있는지. 날짜는 11/02·11-02·11월 2일·2026-11-02 어느 꼴이든 된다.
  * 날짜를 계산하지 못한 업무는 업무명만 있으면 된다. 차량 보험 줄은 형식이 달라 여기서 보지 않는다.
@@ -263,8 +263,10 @@ export function recurringOmissions(recurring = [], lines = []) {
     const dated = /^(.+?): (\d{4})-(\d{2})-(\d{2}) \(D[+-]\d+\)/.exec(r), unknown = /^(.+?): 날짜 계산 불가/.exec(r);
     if (!dated && !unknown) continue;
     const title = norm((dated || unknown)[1]);
-    const day = dated && new RegExp(`(?<!\\d)0?${Number(dated[3])}[/.-]0?${Number(dated[4])}(?!\\d)|(?<!\\d)${Number(dated[3])}월\\s*${Number(dated[4])}일`);
-    if (!lines.some(l => norm(l).includes(title) && (!day || day.test(l)))) out.push(dated ? `${dated[1]} ${dated[3]}/${dated[4]}` : unknown[1]);
+    // 연도가 함께 적혀 있으면 연도도 맞아야 한다(2027-11-16은 2026-11-16 회차가 아니다).
+    const day = dated && new RegExp(`(?<!\\d)(?:(\\d{4})[/.-])?0?${Number(dated[3])}[/.-]0?${Number(dated[4])}(?!\\d)|(?<!\\d)(?:(\\d{4})년\\s*)?${Number(dated[3])}월\\s*${Number(dated[4])}일`, 'g');
+    const dateOk = l => [...l.matchAll(day)].some(m => !(m[1] || m[2]) || (m[1] || m[2]) === dated[2]);
+    if (!lines.some(l => norm(l).includes(title) && (!day || dateOk(l)))) out.push(dated ? `${dated[1]} ${dated[3]}/${dated[4]}` : unknown[1]);
   }
   return out;
 }
