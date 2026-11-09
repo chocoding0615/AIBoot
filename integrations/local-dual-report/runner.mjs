@@ -16,6 +16,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { retryNote, runPlan } from './operating.mjs';
 
 const HOME = path.join(os.homedir(), '.aiboot');
 const CONFIG = path.join(HOME, 'config.json');
@@ -515,6 +516,8 @@ function prompt(slot, date, snap, f) {
     `- 자료 연결 상태가 "연결"이 아닌 분야는 "- 확인 불가(원본 미연결)"로 쓰고 "해당 없음"으로 단정하지 않는다. [복지]·[정기 업무]는 [계산된 사실]의 해당 목록만 근거로 쓴다.`,
     '- 날짜 업무는 "N일 납부: 업체A·업체B — 처리 내용" 꼴, 날짜 오름차순, 같은 날짜·같은 처리는 한 줄로 묶음. 날짜 없는 업무는 분야 마지막.',
     '- [계약서]·[라이센스]는 D-7 → D-30 → D-60 순서로 "- D-30 n건 (대상 요약)" 꼴.',
+    '- 연노랑(연노랑) 표시는 지출결의 작성·제출 표시다. 표시가 없으면 작성 여부를 알 수 없다는 뜻이므로 지출결의·결재를 "미작성·미제출·미처리"로 쓰지 말고 "지출결의 작성 여부 확인 필요"로 쓴다.',
+    '- 고정비 업체명이 있는 줄에는 그 업체의 [계산된 사실] 예정일 말고 다른 날짜(처리할 날, 요일 등)를 쓰지 않는다. 처리 시점은 "오늘"·"다음 근무일"로 쓴다.',
     '- 오늘 새로 확인된 완료가 없으면 오늘 완료에 "- 오늘 새로 확인된 완료 없음". 전자결재 완료 ≠ 지급 완료.',
     `- 본문 ${CHAT_MAX}자 이내. 마크다운 표·굵게·인사말 금지. 운영 기준·금지 규칙 자체를 본문에서 설명하지 말 것(결론만).`,
     `- ${CHAT_MARK} 표시는 최종 답에서 한 번만 쓴다.`,
@@ -752,14 +755,19 @@ async function main() {
   }
   const slot = args.slot;
   if (!SLOTS[slot]) throw new Error('--slot morning|afternoon');
-  const agents = !args.agent || args.agent === 'both' ? Object.keys(AGENTS) : [args.agent];
-  if (agents.some(a => !AGENTS[a])) throw new Error('--agent codex|antigravity|both');
+  const requested = !args.agent || args.agent === 'both' ? Object.keys(AGENTS) : [args.agent];
+  if (requested.some(a => !AGENTS[a])) throw new Error('--agent codex|antigravity|both');
   const c = cfg();
   const date = today();
   const test = !!args.test, dry = !!args['dry-run'];
+  // --as-of only changes which operating period applies (dry-run check of a later day); data and dates stay today's.
+  const plan = runPlan(dry && typeof args['as-of'] === 'string' ? args['as-of'] : date, c, requested, Object.keys(AGENTS));
+  let agents = requested;
 
   if (!test) {
-    if (date < c.trialStart || date > c.trialEnd) return log(`skip ${date} ${slot}: 운영 기간(${c.trialStart}~${c.trialEnd}) 밖`);
+    if (plan.skip) return log(`skip ${date} ${slot}: ${plan.skip}`);
+    agents = plan.agents;
+    if (plan.mode !== '비교 시험') log(`${plan.mode}: ${agents.join(',')}`);
     const now = hm();
     if (now < SLOTS[slot].start || now >= SLOTS[slot].end) return log(`skip ${date} ${slot}: 보고 시간대 밖(${now}) — PC가 꺼져 있었으면 이 회차는 발송하지 않음`);
     const wd = await workday(date, c);
@@ -781,13 +789,15 @@ async function main() {
   await Promise.all(agents.map(async agent => {
     // Test sends are tracked separately from regular runs: `|test` or `|test:<tag>`.
     const key = `${date}|${slot}|${agent}${test ? '|test' + (tag ? ':' + tag : '') : ''}`;
+    // Read before claim(): claiming replaces the entry. Only a validation failure is passed on, nothing else.
+    const note = retryNote(readLedger()[key]);
     const claimed = dry ? true : claim(key);
     if (claimed !== true) return log(`skip ${key}: ledger=${claimed}`);
     const t0 = Date.now();
     try {
       // --from-report re-sends a saved answer without calling the agent (dry-run or test only; still fully validated).
       const raw = (dry || test) && args['from-report'] ? fs.readFileSync(path.join(REPORT_DIR, `${date}-${slot}-${agent}-${args['from-report']}.md`), 'utf8')
-        : await generate(agent, text);
+        : await generate(agent, note ? text + '\n\n' + note : text);
       if (/chat\.googleapis\.com|key=AIza|token=/.test(raw)) throw new Error('output contains secret-like text; not sent');
       // Full analysis stays on this PC only (internal record); Chat gets the validated short part.
       fs.mkdirSync(REPORT_DIR, { recursive: true });
