@@ -223,6 +223,7 @@ function judgeOccurrence(t, o, source, ctx) {
   if (state.state === '완료' || state.state === '보류') return { ...item, status: STATUS.ok, report: REPORT.excluded, reason: state.why };
   if (state.state === '확인 필요') return { ...item, status: STATUS.check, report: REPORT.unknown, reason: state.why };
   if (t.use.warn) return { ...item, status: STATUS.check, report: REPORT.unknown, reason: t.use.warn };
+  if (!t.id) return { ...item, status: STATUS.check, report: REPORT.unknown, reason: '업무ID 미지정 — 처리이력과 연결할 수 없음(--init 필요)' };
   if (d > WINDOW.after) return { ...item, status: STATUS.ok, report: REPORT.excluded, reason: `D-${d} — 보고 범위(D-${WINDOW.after}) 전` };
   if (d < -WINDOW.before) return { ...item, status: STATUS.check, report: REPORT.missing, reason: `D+${-d}, 처리 기록 없음 — 실행기 보고 범위(${WINDOW.before}일) 밖이라 보고되지 않음` };
   if (!report) return noReport(item);
