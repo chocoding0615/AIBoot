@@ -16,6 +16,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { HISTORY_TAB, loadHolidays, makeCalendar, readRecurringSource, recurringLines } from './recurring.mjs';
 import { retryNote, runPlan } from './operating.mjs';
 
 const HOME = path.join(os.homedir(), '.aiboot');
@@ -39,7 +40,6 @@ const CHAT_LOOKBACK_MAX_DAYS = 45;
 const CHAT_MSG_MAX = 2000;
 const CHAT_TEXT_MAX = 8000; // keeps the Antigravity prompt (a command-line argument) under AGY_PROMPT_MAX
 const AGY_PROMPT_MAX = 32000; // Windows command line is 32,767 chars (incl. exe path and flags)
-const HOLIDAY_ICS = 'https://calendar.google.com/calendar/ical/ko.south_korea.official%23holiday%40group.v.calendar.google.com/public/basic.ics';
 const AGENT_TIMEOUT_MS = 10 * 60 * 1000;
 const CHAT_MAX = 2000; // Chat body limit; a report over this is not sent
 const REPORT_DIR = path.join(HOME, 'reports');
@@ -106,26 +106,8 @@ function claim(key) {
 }
 
 /* ---------- workday rules (weekend · public holiday · vacation) ---------- */
-async function holidays() {
-  const cache = path.join(HOME, 'holidays.json');
-  let c = null;
-  try { c = JSON.parse(fs.readFileSync(cache, 'utf8')); } catch {}
-  if (c && c.fetched === today()) return c.days;
-  try {
-    const res = await fetch(HOLIDAY_ICS);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const days = [...(await res.text()).split('BEGIN:VEVENT').slice(1)]
-      .filter(ev => /DESCRIPTION:공휴일/.test(ev))
-      .map(ev => /DTSTART;VALUE=DATE:(\d{4})(\d{2})(\d{2})/.exec(ev)).filter(Boolean)
-      .map(m => `${m[1]}-${m[2]}-${m[3]}`);
-    if (!days.length) throw new Error('0 holidays');
-    fs.writeFileSync(cache, JSON.stringify({ fetched: today(), days }));
-    return days;
-  } catch (e) {
-    log('holiday feed refresh failed: ' + e.message + (c ? ' (using cache)' : ' (no cache)'));
-    return c ? c.days : null;
-  }
-}
+const holidayData = () => loadHolidays({ file: path.join(HOME, 'holidays.json'), today: today(), log });
+const holidays = async () => (await holidayData())?.days || null;
 async function workday(ymd, c) {
   if ((c.workdaysExtra || []).includes(ymd)) return { ok: true, reason: '지정 근무일' };
   const dow = new Date(ymd + 'T00:00:00Z').getUTCDay();
@@ -371,29 +353,21 @@ async function snapshot(c, slot = '') {
       sources['복지'] = '조회 실패';
     }
   } else sources['복지'] = '미설정';
-  // Recurring work: the user's existing dated task register is authoritative.
-  // Columns A-D only: date, task, optional detail, completion. No extra employee data.
-  // Blank completion is unknown, not proof of non-completion.
+  // Recurring work: rules in the [MS] 김현호 task tab plus its per-occurrence history. Unknown dates stay unknown.
+  // The old dated task tab is no longer a source and is never parsed as rules.
   const recurring = [];
-  try {
-    const v = await sheets.spreadsheets.values.get({
-      spreadsheetId: c.spreadsheetId, range: "'업무'!A1:D150"
-    });
-    for (const row of (v.data.values || []).slice(1)) {
-      const due = String(row[0] || '').trim();
-      const title = String(row[1] || '').trim();
-      const done = row[3] === true || String(row[3]).toUpperCase() === 'TRUE';
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(due) || !title || done) continue;
-      const d = daysBetween(today(), due);
-      // 30 days of unconfirmed overdue, 60 days of upcoming dated tasks.
-      if (d < -30 || d > 60) continue;
-      recurring.push(`${title}: ${due} (${d < 0 ? 'D+' + -d : 'D-' + d}) — 완료 여부 확인 필요`);
+  if (c.recurringSpreadsheetId) {
+    try {
+      const source = await readRecurringSource(sheets.spreadsheets, c.recurringSpreadsheetId, log);
+      recurring.push(...recurringLines(source, makeCalendar(await holidayData(), c), today()));
+      sources['정기 업무([MS] 김현호 업무 A:D)'] = '연결';
+      if (source.historyState !== '연결') log('recurring history: ' + source.historyState);
+      if (source.registered === false) log('recurring source not registered in Master_Sheet');
+    } catch (e) {
+      log('recurring tasks read failed: ' + e.message);
+      sources['정기 업무(업무 탭)'] = '조회 실패';
     }
-    sources['정기 업무(고정비 문서 업무 탭 A:D)'] = '연결';
-  } catch (e) {
-    log('dated tasks read failed: ' + e.message);
-    sources['정기 업무(업무 탭)'] = '조회 실패';
-  }
+  } else sources['정기 업무(업무 탭)'] = '미설정';
   // The separate HR training roster does not define a due date; do not
   // substitute its collection date or blank training period for the dated task.
   // Vehicle insurance renewal: 계약서(DB) only — C 분류, E 내용, I 종료일, Q 비고. An ended 차량보험
@@ -468,6 +442,7 @@ async function facts(date, c, snap) {
     '',
     `[정기 업무 — 연결된 원본에서 확인된 것만. 원본에 없는 기한·일정은 만들지 말고 "미입력"은 그대로 미입력으로 쓴다] 아래 항목이 있으면 오늘 남은 일에 [정기 업무]를 표시한다`,
     ...(snap.recurring?.length ? snap.recurring.map(r => `- ${r}`) : ['- 없음']),
+    `- 회차의 완료·보류는 ${HISTORY_TAB} 탭 기록만 기준이고 코드가 이미 반영했다. 위 목록에 있는 회차를 완료로 쓰지 말 것`,
     '- 정기 신고·점검: 일정 원본 미연결 — 내용을 쓰지 말 것',
     '- 보험 계약(화재보험 등)이 [계약서] 목록에 있으면 [계약서]에서만 다루고 [정기 업무]에 중복하지 말 것',
     '',
