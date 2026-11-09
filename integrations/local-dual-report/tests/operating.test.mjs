@@ -45,7 +45,7 @@ test('실행기: 운영 기간 판단은 runPlan 하나, 시간대·휴무 확�
 
 test('검증기는 느슨해지지 않음: 연노랑 단정·알고퀵 날짜 규칙 유지', () => {
   const src = fs.readFileSync(new URL('../runner.mjs', import.meta.url), 'utf8');
-  assert.ok(src.includes("errs.push('연노랑 없음을 미작성·미처리로 단정')"));
+  assert.ok(src.includes('errs.push(`연노랑 없음을 미작성·미처리로 단정: '));
   assert.ok(src.includes('날짜 오류: ${s.vendor} 규칙상 ${s.day}일'));
 });
 
