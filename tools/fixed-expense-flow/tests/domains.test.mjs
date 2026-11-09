@@ -225,3 +225,10 @@ test('미연결 소스는 실행기 표시에서 가져오고, 도구는 쓰기 
   // 대상 수는 코드에 박지 않는다: 고정비 기대값 22 외 분야 상수 없음
   assert.doesNotMatch(fs.readFileSync(path.join(HERE, '../domains.mjs'), 'utf8'), /EXPECTED/);
 });
+
+test('정기 업무: 새로 추가돼 업무ID가 없는 행은 정상으로 보이지 않음', () => {
+  const tasks = parseTasks([['새 업무', '1회', '2026-11-16']]);
+  const r = judgeRecurring({ tasks, history: new Map(), historyState: '연결', calendar }, [], { report: both({ '[정기 업무]': '- 11/16 새 업무' }), today });
+  assert.equal(r.items[0].status, STATUS.check);
+  assert.match(r.items[0].reason, /업무ID 미지정/);
+});

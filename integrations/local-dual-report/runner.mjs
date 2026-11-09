@@ -16,7 +16,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { HISTORY_TAB, loadHolidays, makeCalendar, readRecurringSource, recurringLines } from './recurring.mjs';
+import { HISTORY_TAB, loadHolidays, makeCalendar, readRecurringSource, recurringLines, recurringOmissions } from './recurring.mjs';
 import { retryNote, runPlan } from './operating.mjs';
 
 const HOME = path.join(os.homedir(), '.aiboot');
@@ -492,6 +492,7 @@ function prompt(slot, date, snap, f) {
     '- 날짜 업무는 "N일 납부: 업체A·업체B — 처리 내용" 꼴, 날짜 오름차순, 같은 날짜·같은 처리는 한 줄로 묶음. 날짜 없는 업무는 분야 마지막.',
     '- [계약서]·[라이센스]는 D-7 → D-30 → D-60 순서로 "- D-30 n건 (대상 요약)" 꼴.',
     '- 연노랑(연노랑) 표시는 지출결의 작성·제출 표시다. 표시가 없으면 작성 여부를 알 수 없다는 뜻이므로 지출결의·결재를 "미작성·미제출·미처리"로 쓰지 말고 "지출결의 작성 여부 확인 필요"로 쓴다.',
+    '- "지출결의"·"결의"·"결재"가 들어간 줄에는 조건문·추천문이라도 "미작성"·"미제출"·"미처리" 단어를 쓰지 않는다. 예: "미작성 건은 상신" 대신 "작성 여부를 확인하고 필요하면 상신".',
     '- 고정비 업체명이 있는 줄에는 그 업체의 [계산된 사실] 예정일 말고 다른 날짜(처리할 날, 요일 등)를 쓰지 않는다. 처리 시점은 "오늘"·"다음 근무일"로 쓴다.',
     '- 오늘 새로 확인된 완료가 없으면 오늘 완료에 "- 오늘 새로 확인된 완료 없음". 전자결재 완료 ≠ 지급 완료.',
     `- 본문 ${CHAT_MAX}자 이내. 마크다운 표·굵게·인사말 금지. 운영 기준·금지 규칙 자체를 본문에서 설명하지 말 것(결론만).`,
@@ -546,6 +547,7 @@ function validate(chat, f) {
         if (!f.welfareOk && (items['[복지]'] || []).some(l => !/확인 불가/.test(l))) errs.push(`${h[i]} [복지]: 미연결 자료는 "확인 불가"로 표시`);
         if (f.welfareOk && f.welfareImminent?.length && (items['[복지]'] || []).every(l => /해당 없음|확인 불가/.test(l))) errs.push(`${h[i]} [복지]: 임박 적용일(${f.welfareImminent.map(w => w.date.slice(5)).join(',')}) 누락`);
         if (f.recurring?.length && !tags.includes('[정기 업무]')) errs.push(`${h[i]}: 확인된 정기 업무 ${f.recurring.length}건인데 [정기 업무] 없음`);
+        errs.push(...recurringOmissions(f.recurring, items['[정기 업무]'] || []).map(x => `${h[i]} [정기 업무]: ${x} 누락`));
       }
       let field = null, lastDay = -1, undated = false, lastBucket = -1;
       for (const l of block) {
@@ -594,7 +596,9 @@ function validate(chat, f) {
   if (/미납(?!\S*\s*(?:판단|단정|으로 보지|아님))/.test(chat)) errs.push('"미납" 단정 표현');
   if (/이지화물/.test(chat)) errs.push('비활성 업체(이지화물) 포함');
   // No yellow cell ≠ not processed: the sheet cannot prove an expense report is missing.
-  if (/(지출결의|결의|결재)[^\n]*(미작성|미제출|미처리)\s*(상태|입니다|임)?/.test(chat)) errs.push('연노랑 없음을 미작성·미처리로 단정');
+  // The offending line goes into the error so the retry prompt can tell the agent which sentence to rewrite.
+  const yellowLine = chat.split('\n').find(l => /(지출결의|결의|결재)[^\n]*(미작성|미제출|미처리)\s*(상태|입니다|임)?/.test(l));
+  if (yellowLine) errs.push(`연노랑 없음을 미작성·미처리로 단정: "${yellowLine.trim().slice(0, 80)}"`);
   const unread = f.chatText ? 'Gmail|메일함|캘린더' : 'Gmail|메일함|캘린더|스페이스|채팅방';
   if (new RegExp(`(${unread})[^\\n]*(확인됨|수신됨|에 따르면|공지)`).test(chat)) errs.push('미연결 자료를 본 것처럼 기술');
   if (chat.length > CHAT_MAX) errs.push(`길이 초과 ${chat.length}>${CHAT_MAX}`);

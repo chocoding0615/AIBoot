@@ -115,7 +115,13 @@ function businessDaysBefore(ymd, n, cal) {
 /** B 주기 + C 기준 → 규칙. 정해진 표현이 아니면 해석하지 않고 error를 돌려준다. */
 export function parseRule(cycle, basis) {
   const c = String(cycle ?? '').replace(/\s/g, ''), b = String(basis ?? '').replace(/\s/g, '');
+  if (!c && /^\d{4}-\d{2}-\d{2}$/.test(b)) return { error: '주기 미입력 — 한 번만 할 업무는 B열에 1회' };
   if (!c || !b) return { error: '주기 또는 기준 미설정' };
+  if (c === '1회' || c === '단발') {
+    // 한 번만: 연도까지 있는 날짜만 받는다. 연도 없는 날짜는 해마다 반복으로 오해할 수 있어 받지 않는다.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(b) && realDate(b)) return { kind: 'once', date: b };
+    return { error: `1회 업무는 연도까지 있는 날짜(YYYY-MM-DD)가 필요: ${clean(basis)}` };
+  }
   if (c === '매월') return b === '첫영업일' ? { kind: 'first-business' } : { error: `매월 기준 해석 불가: ${clean(basis)}` };
   const year = /^매년(?:(\d+)회)?$/.exec(c);
   if (!year) return { error: `주기 해석 불가: ${clean(cycle)}` };
@@ -125,7 +131,8 @@ export function parseRule(cycle, basis) {
     const names = [lunar[1] && '설날', lunar[2] && '추석'].filter(Boolean);
     return names.length === count ? { kind: 'lunar', names, offset: Number(lunar[3]) } : { error: `주기 ${count}회와 기준 ${names.length}개가 다름` };
   }
-  const dates = b.split(/[,，]/);
+  // 날짜 셀은 연도가 붙어 올 수 있다(2025-05-08). 매년 규칙은 월·일만 쓴다.
+  const dates = b.split(/[,，]/).map(d => /^\d{4}-\d{2}-\d{2}$/.test(d) ? d.slice(5) : d);
   if (!dates.every(d => /^\d{2}-\d{2}$/.test(d) && realDate('2024-' + d))) return { error: `기준 해석 불가: ${clean(basis)}` };
   if (dates.length !== count) return { error: `주기 ${count}회와 기준 ${dates.length}개가 다름` };
   if (new Set(dates).size !== count) return { error: `같은 날짜가 반복됨: ${clean(basis)}` };
@@ -179,6 +186,9 @@ export function occurrences(rule, cal, today, { before = WINDOW.before, after = 
       const due = firstBusinessDay(year, month, cal);
       if (due) push(key, due); else out.push({ key, unknown: `${key} 첫 영업일 계산 불가(공휴일 목록 없음)` });
     }
+  } else if (rule.kind === 'once') {
+    // 회차키가 날짜가 아니라 '1회'라서 날짜를 고치면 기록 당시 기준일과 달라져 확인 필요로 돌아간다.
+    push('1회', rule.date);
   } else if (rule.kind === 'dates') {
     for (let y = y0; y <= y1; y++) rule.dates.forEach((md, i) => {
       const key = rule.dates.length === 1 ? String(y) : `${y}-${i + 1}`, due = `${y}-${md}`;
@@ -242,7 +252,31 @@ export function recurringLines(source, cal, today) {
   return lines;
 }
 
+const norm = s => String(s).replace(/[s()·]/g, '').toLowerCase(); // runner.mjs norm과 같다
+/**
+ * 계산된 정기 업무 회차가 보고 줄에 업무명과 날짜로 모두 있는지. 날짜는 11/02·11-02·11월 2일·2026-11-02 어느 꼴이든 된다.
+ * 날짜를 계산하지 못한 업무는 업무명만 있으면 된다. 차량 보험 줄은 형식이 달라 여기서 보지 않는다.
+ */
+export function recurringOmissions(recurring = [], lines = []) {
+  const out = [];
+  for (const r of recurring) {
+    const dated = /^(.+?): (\d{4})-(\d{2})-(\d{2}) \(D[+-]\d+\)/.exec(r), unknown = /^(.+?): 날짜 계산 불가/.exec(r);
+    if (!dated && !unknown) continue;
+    const title = norm((dated || unknown)[1]);
+    const day = dated && new RegExp(`(?<!\\d)0?${Number(dated[3])}[/.-]0?${Number(dated[4])}(?!\\d)|(?<!\\d)${Number(dated[3])}월\\s*${Number(dated[4])}일`);
+    if (!lines.some(l => norm(l).includes(title) && (!day || day.test(l)))) out.push(dated ? `${dated[1]} ${dated[3]}/${dated[4]}` : unknown[1]);
+  }
+  return out;
+}
+
 /* ---------- 원본 읽기 (spreadsheets API는 호출하는 쪽이 넘긴다) ---------- */
+
+/** 날짜 형식 셀은 표시값(11-16)이 연도를 숨기므로 실제 값(일련번호)에서 YYYY-MM-DD로 바꾼다. 나머지는 표시값 그대로. */
+export function cellText(v) {
+  const n = v?.effectiveValue?.numberValue, type = v?.effectiveFormat?.numberFormat?.type;
+  if (typeof n === 'number' && (type === 'DATE' || type === 'DATE_TIME')) return new Date(Date.UTC(1899, 11, 30) + Math.floor(n) * 86400000).toISOString().slice(0, 10);
+  return v?.formattedValue ?? '';
+}
 
 /**
  * 파일 제목과 `Master_Sheet` 등록을 확인하고 규칙표·처리이력을 읽는다. 다른 탭은 읽지 않는다.
@@ -255,9 +289,9 @@ export async function readRecurringSource(api, spreadsheetId, log = () => {}) {
   const taskTab = tabs.find(t => t.title === TASK_TAB);
   if (!taskTab) throw new Error('업무 탭 없음');
   const grid = await api.get({ spreadsheetId, ranges: [TASK_RANGE],
-    fields: 'sheets(data(rowMetadata(developerMetadata(metadataKey,metadataValue)),rowData(values(formattedValue))))' });
+    fields: 'sheets(data(rowMetadata(developerMetadata(metadataKey,metadataValue)),rowData(values(formattedValue,effectiveValue,effectiveFormat(numberFormat(type))))))' });
   const data = grid.data.sheets[0].data[0];
-  const rows = (data.rowData || []).map(r => [0, 1, 2, 3].map(i => r.values?.[i]?.formattedValue ?? ''));
+  const rows = (data.rowData || []).map(r => [0, 1, 2, 3].map(i => cellText(r.values?.[i])));
   const rowIds = (data.rowMetadata || []).map(m => (m.developerMetadata || []).find(x => x.metadataKey === ID_KEY)?.metadataValue || null);
   let registered = null;
   try {
