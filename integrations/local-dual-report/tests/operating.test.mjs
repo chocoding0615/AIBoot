@@ -48,3 +48,4 @@ test('검증기는 느슨해지지 않음: 연노랑 단정·알고퀵 날짜 �
   assert.ok(src.includes("errs.push('연노랑 없음을 미작성·미처리로 단정')"));
   assert.ok(src.includes('날짜 오류: ${s.vendor} 규칙상 ${s.day}일'));
 });
+
