@@ -31,6 +31,10 @@
 
 주말 · 한국 공휴일(Google 공개 캘린더) · `config.json`의 `vacations`/`holidaysExtra` · 운영 기간(`trialStart`~`trialEnd`) 밖 · 보고 시간대 밖(오전 09:30–11:00, 오후 16:00–17:30).
 
+**비교 시험과 시험 후 운영(`operating.mjs`):** `trialStart`~`trialEnd`는 두 AI 비교 시험이다. `trialEnd` 다음 날부터는 `afterTrialAgents`(예: `["antigravity"]`)에 적힌 AI만 보고하고, 값이 없거나 잘못되면 보고하지 않는다. 슬롯·재시도 3회·원장 중복 방지·휴무 판단은 같다. `--dry-run --as-of YYYY-MM-DD`는 운영 기간 판단(어느 AI가 보고하는지)만 그날로 바꿔 실제 경로를 돌린다. 자료 조회·AI 생성·검증은 오늘 기준으로 실행하고 발송·원장 기록은 하지 않는다. 보고 시간대·휴무 확인은 그대로 적용되며, `--test`는 운영 기간 판단을 건너뛴다.
+
+**재시도:** 직전 시도가 발송 전 검증에서 막혔으면 다음 시도의 프롬프트에 그 사유를 붙인다. 검증 규칙은 그대로라 같은 오류면 다시 막힌다.
+
 ## 제한
 
 - **PC가 꺼져 있거나 로그아웃 상태면 보고가 나가지 않는다.** 시간대가 지난 뒤 켜면 그 회차는 건너뛴다. Codex/Antigravity는 이 PC의 구독 로그인으로만 실행된다. 클라우드 대체 수단은 유료 API가 필요해 쓰지 않는다.
@@ -40,7 +44,7 @@
 
 ## 설정·비밀값
 
-`%USERPROFILE%\.aiboot\config.json` (사용자 전용 권한, 저장소 밖): `webhookUrl`, `spreadsheetId`, `googleAuthDir`, `trialStart`, `trialEnd`, `vacations`, `holidaysExtra`, `workdaysExtra`, `contractsSpreadsheetId`, `opsSpreadsheetId`(AD_운영 관리: 복지 적용일), `trainingSpreadsheetId`(HR_법정의무교육 일정표), `chatSpaces`(스페이스 ID 배열), `chatOAuthKeys`(선택: Chat 전용 OAuth 클라이언트 JSON 경로). **이 저장소에 값을 쓰지 않는다.**
+`%USERPROFILE%\.aiboot\config.json` (사용자 전용 권한, 저장소 밖): `webhookUrl`, `spreadsheetId`, `googleAuthDir`, `trialStart`, `trialEnd`, `afterTrialAgents`(선택), `vacations`, `holidaysExtra`, `workdaysExtra`, `contractsSpreadsheetId`, `opsSpreadsheetId`(AD_운영 관리: 복지 적용일), `trainingSpreadsheetId`(HR_법정의무교육 일정표), `chatSpaces`(스페이스 ID 배열), `chatOAuthKeys`(선택: Chat 전용 OAuth 클라이언트 JSON 경로). **이 저장소에 값을 쓰지 않는다.**
 
 ## 명령
 
