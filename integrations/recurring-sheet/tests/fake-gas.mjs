@@ -4,6 +4,7 @@
  *   - 행 개발자 메타데이터는 행을 넣고 지우면 행과 함께 움직이고, 행을 지우면 사라진다.
  *   - setValues는 글자 형식(@)이 아닌 셀에 '2026-11' 같은 글자를 넣으면 날짜로 바꾼다.
  *   - 날짜 셀의 표시값은 연도를 숨긴 MM-dd다(실제 7행처럼).
+ *   - setValues는 `=`로 시작하는 글자를 수식으로 받는다(공식 문서). 서식 있는 텍스트(setRichTextValues)는 글자 그대로다.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -46,6 +47,7 @@ export class FakeSheet {
     return { withKey(k) { key = k; return this; }, find() {
       const out = [];
       sheet.meta.forEach((list, i) => list.filter(m => m.key === key).forEach(m => out.push({ getValue: () => m.value,
+        remove: () => { if (sheet.failWrites) throw new Error(sheet.failWrites); sheet.writes++; const l = sheet.meta.find(x => x.includes(m)); l.splice(l.indexOf(m), 1); },
         getLocation: () => ({ getLocationType: () => 'ROW', getRow: () => ({ getRow: () => i + 1 }) }) })));
       return out;
     } };
@@ -61,13 +63,19 @@ class FakeRange {
   getLastRow() { return this.row + this.nr - 1; }
   grid(f, read = false) { const out = []; for (let i = 0; i < this.nr; i++) { const r = []; for (let j = 0; j < this.nc; j++) r.push(f(read ? (this.sheet.cells[this.row + i - 1]?.[this.col + j - 1] || { v: '' }) : this.sheet.cell(this.row + i, this.col + j))); out.push(r); } return out; }
   getValues() { return this.grid(c => c.v, true); }
-  getDisplayValues() { return this.grid(c => isDate(c.v) ? fmt(c.v, 'MM-dd') : String(c.v ?? ''), true); }
+  getDisplayValues() { return this.grid(c => isDate(c.v) ? fmt(c.v, 'MM-dd') : c.v && c.v.formula ? '(수식 결과)' : String(c.v ?? ''), true); }
   setNumberFormat(f) { this.grid(c => { c.text = f === '@'; }); return this; }
   setValues(rows) {
     if (this.sheet.failWrites) throw new Error(this.sheet.failWrites);
     this.sheet.writes++;
     rows.forEach((r, i) => r.forEach((v, j) => { const c = this.sheet.cell(this.row + i, this.col + j);
-      c.v = !c.text && typeof v === 'string' && /^\d{4}-\d{2}(-\d{2})?$/.test(v) ? kstDate(v.length === 7 ? v + '-01' : v) : v; }));
+      c.v = typeof v === 'string' && v.startsWith('=') ? { formula: v } : !c.text && typeof v === 'string' && /^\d{4}-\d{2}(-\d{2})?$/.test(v) ? kstDate(v.length === 7 ? v + '-01' : v) : v; }));
+    return this;
+  }
+  setRichTextValues(rows) {
+    if (this.sheet.failWrites) throw new Error(this.sheet.failWrites);
+    this.sheet.writes++;
+    rows.forEach((r, i) => r.forEach((v, j) => { this.sheet.cell(this.row + i, this.col + j).v = v.text; }));
     return this;
   }
   addDeveloperMetadata(key, value) {
@@ -103,6 +111,7 @@ export function loadGas({ ss, now = '2026-11-09 10:00', ics = '', lockFails = fa
     HtmlService: { createTemplateFromFile: () => ({ evaluate: () => ({ setWidth() { return this; }, setHeight() { return this; } }) }) },
     SpreadsheetApp: {
       getActiveSpreadsheet: () => ss, flush() {}, getActiveRange: () => active,
+      newRichTextValue: () => { let t = ''; return { setText(x) { t = x; return this; }, build: () => ({ text: t }) }; },
       DeveloperMetadataVisibility: { DOCUMENT: 'DOCUMENT' },
       getUi: () => ({ alert: m => log.alerts.push(m), showModalDialog: (h, t) => log.dialogs.push(t),
         createMenu: () => ({ addItem() { return this; }, addSeparator() { return this; }, addToUi() {} }) })
@@ -115,3 +124,23 @@ export function loadGas({ ss, now = '2026-11-09 10:00', ics = '', lockFails = fa
 
 export const ICS = ['2026-01-01:신정', '2026-02-17:설날', '2026-09-25:추석', '2026-10-09:한글날', '2026-12-25:기독탄신일', '2027-01-01:신정', '2027-02-07:설날', '2027-09-15:추석']
   .map(s => { const [d, n] = s.split(':'); return `BEGIN:VEVENT\nDTSTART;VALUE=DATE:${d.replace(/-/g, '')}\nSUMMARY:${n}\nDESCRIPTION:공휴일\nEND:VEVENT`; }).join('\n');
+
+/** 가짜 시트 → Sheets API 응답 모양. 정기 보고의 readRecurringSource를 그대로 부르기 위한 것. */
+export function sheetsApi(ss) {
+  const fv = v => isDate(v) ? fmt(v, 'MM-dd') : String(v ?? '');
+  return {
+    get: async ({ ranges }) => {
+      if (!ranges) return { data: { properties: { title: ss.name }, sheets: ss.sheets.map(s => ({ properties: { sheetId: s.id, title: s.name } })) } };
+      const t = ss.getSheetByName('업무'), rows = t.cells.slice(1, 200);
+      return { data: { sheets: [{ data: [{
+        rowMetadata: rows.map((_, i) => ({ developerMetadata: (t.meta[i + 1] || []).map(m => ({ metadataKey: m.key, metadataValue: m.value })) })),
+        rowData: rows.map(r => ({ values: r.map(c => isDate(c.v) ? { formattedValue: fv(c.v), effectiveValue: { numberValue: (c.v.getTime() + 9 * 3600000) / 86400000 + 25569 }, effectiveFormat: { numberFormat: { type: 'DATE' } } } : { formattedValue: fv(c.v) }) }))
+      }] }] } };
+    },
+    values: { get: async ({ range }) => {
+      if (range.startsWith("'Master_Sheet'")) throw new Error('no Master_Sheet in fake');
+      const h = ss.getSheetByName('반복업무_처리이력');
+      return { data: { values: h.cells.map(r => r.map(c => fv(c.v))) } };
+    } }
+  };
+}

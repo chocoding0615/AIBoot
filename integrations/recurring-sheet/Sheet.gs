@@ -65,15 +65,16 @@ function readSource_(ss) {
   while (last > 0 && display[last - 1].every(function (c) { return String(c).trim() === ''; })) last--;
   var rows = [];
   for (var i = 0; i < last; i++) rows.push([0, 1, 2, 3].map(function (c) { return cellText_(values[i][c], display[i][c]); }));
-  var rowIds = [];
+  var rowIds = [], idMeta = [];
   sheet.createDeveloperMetadataFinder().withKey(Recurring.ID_KEY).find().forEach(function (md) {
     var loc = md.getLocation();
     if (String(loc.getLocationType()) !== 'ROW') return;
     var row = loc.getRow().getRow();
+    idMeta.push({ row: row, md: md, empty: row >= 2 && (row - 2 >= last || display[row - 2].every(function (c) { return String(c).trim() === ''; })) });
     if (row >= 2 && row <= AIBOOT_LAST_ROW && rowIds[row - 2] == null) rowIds[row - 2] = md.getValue();
   });
   for (var j = 0; j < last; j++) if (rowIds[j] === undefined) rowIds[j] = null;
-  var source = { tasks: Recurring.parseTasks(rows, rowIds.slice(0, last)), history: new Map(), historyState: '미생성', historyHeader: null, taskSheetId: sheet.getSheetId(), sheet: sheet, historySheet: null };
+  var source = { tasks: Recurring.parseTasks(rows, rowIds.slice(0, last)), history: new Map(), historyState: '미생성', historyHeader: null, taskSheetId: sheet.getSheetId(), sheet: sheet, historySheet: null, idMeta: idMeta };
   var hist = ss.getSheetByName(Recurring.HISTORY_TAB);
   if (hist) {
     source.historySheet = hist;
@@ -119,17 +120,52 @@ function withLock_(fn) {
 
 /* ---------- 쓰기 ---------- */
 
+/** 쓰기 직전 다시 읽기용: 한 행 A~D 표시값(공백 정리). */
+function rowText_(sheet, row) {
+  return sheet.getRange(row, 1, 1, 4).getDisplayValues()[0].map(function (c) { return String(c).replace(/\s+/g, ' ').trim(); });
+}
+function rowHasId_(sheet, row) {
+  return sheet.createDeveloperMetadataFinder().withKey(Recurring.ID_KEY).find().some(function (md) {
+    var loc = md.getLocation(); return String(loc.getLocationType()) === 'ROW' && loc.getRow().getRow() === row;
+  });
+}
+
+/**
+ * 이력 한 행 쓰기. 쓰기 직전에 그 행이 아직 같은 회차(갱신) 또는 빈 행(추가)인지 다시 확인한다 —
+ * 잠금은 스크립트끼리만 막고 사용자의 행 삭제·삽입은 막지 못하기 때문이다.
+ * 서식 있는 텍스트로 쓰므로 근거가 `=`로 시작해도 수식이 되지 않고, `2026-11`도 날짜로 바뀌지 않는다.
+ */
+function writeHistoryRow_(hist, row, values, expect) {
+  var range = hist.getRange(row, 1, 1, values.length);
+  var now = range.getDisplayValues()[0];
+  var ok = expect ? now[0] === expect[0] && now[1] === expect[1] : now.every(function (c) { return String(c) === ''; });
+  if (!ok) throw new Error('처리이력 탭이 그 사이 바뀌었음 — 대화상자를 다시 열기');
+  range.setNumberFormat('@').setRichTextValues([values.map(function (v) { return SpreadsheetApp.newRichTextValue().setText(String(v)).build(); })]);
+}
+
 /** ID 없는 업무 행에 ID를 붙인다. 이미 있는 ID는 바꾸지 않고, 이력 탭은 만들지 않는다(setup에서만). */
 function assignNewIds_() {
   return withLock_(function () {
     var ss = spreadsheet_(), source = readSource_(ss);
     if (source.historyState === '조회 실패') throw new Error('처리이력 탭 머리글이 고정 열과 다름 — ID 지정 중단');
-    var plan = RecurringStatus.planInit(source.historyState === '미생성' ? Object.assign({}, source, { historyState: '연결', historyHeader: Recurring.HISTORY_HEADER }) : source, newId_, 0);
-    plan.assign.forEach(function (a) {
-      source.sheet.getRange(a.row + ':' + a.row).addDeveloperMetadata(Recurring.ID_KEY, a.id, SpreadsheetApp.DeveloperMetadataVisibility.DOCUMENT);
+    // A~D를 모두 비운 행의 ID는 뗀다. 그 행에 새 업무를 쓰면 예전 업무의 ID·완료 기록을 물려받아 보고에서 빠지기 때문이다.
+    // (이름·규칙을 고치는 것은 같은 업무로 보고 ID를 유지한다.) 잘못 비웠다 다시 써도 새 ID가 되어 미처리로 보일 뿐 누락은 없다.
+    var cleared = [];
+    source.idMeta.filter(function (m) { return m.empty; }).forEach(function (m) {
+      if (rowText_(source.sheet, m.row).every(function (c) { return c === ''; })) { m.md.remove(); cleared.push(m.row); }
     });
-    if (plan.assign.length) SpreadsheetApp.flush();
-    return { assigned: plan.assign };
+    if (cleared.length) source = readSource_(ss);
+    var plan = RecurringStatus.planInit(source.historyState === '미생성' ? Object.assign({}, source, { historyState: '연결', historyHeader: Recurring.HISTORY_HEADER }) : source, newId_, 0);
+    var done = [];
+    plan.assign.forEach(function (a) {
+      // 읽은 뒤 사용자가 행을 넣거나 지웠으면 그 자리는 다른 행이다. 같은 업무명이고 아직 ID가 없을 때만 붙인다.
+      var task = source.tasks.filter(function (t) { return t.row === a.row; })[0];
+      if (rowText_(source.sheet, a.row)[0] !== task.title || rowHasId_(source.sheet, a.row)) return;
+      source.sheet.getRange(a.row + ':' + a.row).addDeveloperMetadata(Recurring.ID_KEY, a.id, SpreadsheetApp.DeveloperMetadataVisibility.DOCUMENT);
+      done.push(a);
+    });
+    if (done.length || cleared.length) SpreadsheetApp.flush();
+    return { assigned: done, cleared: cleared };
   });
 }
 
@@ -180,19 +216,23 @@ function listOccurrences(row) {
  * 검사·같은 회차 갱신 규칙은 recurring-status.mjs planMark 원문 그대로다.
  */
 function markOccurrence(req) {
+  var cal = calendar_(), today = today_(); // 외부 조회는 잠금 전에 끝내 읽기와 쓰기 사이를 짧게 한다
   return withLock_(function () {
     var source = readSource_(spreadsheet_());
     var task = source.tasks.filter(function (t) { return t.row === req.row; })[0];
     if (!task || task.id !== req.id) throw new Error('선택한 행의 업무가 바뀌었음 — 대화상자를 다시 열기');
-    var plan = RecurringStatus.planMark(source, { id: req.id, key: req.key, status: req.status, note: req.note }, calendar_(), today_(), stamp_());
+    // 대화상자에서 본 기준일과 지금 계산한 기준일이 다르면(그 사이 C열을 고친 경우) 기록하지 않는다.
+    var occ = task.rule.error ? null : Recurring.occurrences(task.rule, cal, today, { before: 400 }).filter(function (o) { return o.key === req.key && o.due; })[0];
+    if (occ && req.due && occ.due !== req.due) throw new Error('회차 기준일이 ' + req.due + '에서 ' + occ.due + '로 바뀌었음 — 대화상자를 다시 열기');
+    if (!req.due) throw new Error('기준일 없는 요청 — 대화상자를 다시 열기');
+    var plan = RecurringStatus.planMark(source, { id: req.id, key: req.key, status: req.status, note: req.note }, cal, today, stamp_());
     if (plan.op === 'none') return { op: 'none', message: '변경 없음: ' + plan.reason };
     var hist = source.historySheet, row = plan.row;
     if (plan.op === 'append') {
       row = Math.max(hist.getLastRow(), 1) + 1;
       if (row > hist.getMaxRows()) hist.insertRowsAfter(hist.getMaxRows(), 1);
     }
-    // 글자 형식으로 먼저 바꿔야 2026-11 같은 회차키가 날짜로 바뀌지 않는다(Node 도구의 RAW 쓰기와 같게).
-    hist.getRange(row, 1, 1, plan.values.length).setNumberFormat('@').setValues([plan.values]);
+    writeHistoryRow_(hist, row, plan.values, plan.op === 'update' ? [req.id, req.key] : null);
     SpreadsheetApp.flush();
     return { op: plan.op, row: row, message: task.title + ' ' + req.key + ' → ' + req.status };
   });

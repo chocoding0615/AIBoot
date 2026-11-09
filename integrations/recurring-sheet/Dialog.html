@@ -64,7 +64,7 @@
     google.script.run
       .withSuccessHandler(function (r) { load(r.message); })
       .withFailureHandler(function (e) { show('실패: ' + e.message, true); })
-      .markOccurrence({ row: data.row, id: data.id, key: picked.key, status: status, note: note });
+      .markOccurrence({ row: data.row, id: data.id, key: picked.key, due: picked.due, status: status, note: note });
   }
   function load(after) {
     picked = null;
