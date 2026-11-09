@@ -128,7 +128,7 @@ test('복지: D-7 이내만 대상, 날짜와 인원수가 맞아야 정상, 7�
 });
 
 test('정기 업무: 규칙표 회차를 보고와 대조, 완료·보류·다음 회차·날짜 불명을 구분', () => {
-  const tasks = parseTasks([['주차권 구매', '매월', '첫 영업일'], ['법정의무교육', '매년 2회', '05-01, 11-01'], ['SGI보증보험', '매년 1회', '12-15'], ['어버이날 포인트', '매년', '05-08'], ['멈춘 업무', '매년', '12-01', '중지'], ['분기 점검', '분기', '말일']], ['T1', 'T2', 'T3', 'T4', 'T5', 'T6']);
+  const tasks = parseTasks([['주차권 구매', '매월', '첫 영업일', '', 'D-60'], ['법정의무교육', '매년 2회', '05-01, 11-01', '', 'D-60'], ['SGI보증보험', '매년 1회', '12-15', '', 'D-60'], ['어버이날 포인트', '매년', '05-08', '', 'D-60'], ['멈춘 업무', '매년', '12-01', '중지'], ['분기 점검', '분기', '말일']], ['T1', 'T2', 'T3', 'T4', 'T5', 'T6']);
   const history = parseHistory([HISTORY_HEADER, ['T1', '2026-11', '완료', 'x', '비밀 근거', '2026-11-02'], ['T3', '2026', '보류', 'x', '사유', '2026-12-15']]);
   const r = judgeRecurring({ tasks, history, historyState: '연결', calendar }, [], { report: both({ '[정기 업무]': '- 11/01 법정의무교육 (D+5)\n- 12/01 주차권 구매' }), today });
   assert.equal(item(r, '주차권 구매 · 2026-11').report, REPORT.excluded);
@@ -159,14 +159,15 @@ test('정기 업무: 보고 누락, 날짜 불일치, 동명 업무, 사용 여�
   assert.equal(judge({ tasks, history: noNote }, '- 11/01 법정의무교육').items[0].status, STATUS.check);
 });
 
-test('정기 업무: 날짜를 계산 못 하면 임의 날짜 없이 확인 필요, 원본을 옮긴 뒤 D+30 초과만 미처리로 셈', () => {
+test('정기 업무: 날짜를 계산 못 하면 임의 날짜 없이 확인 필요, D+8 이후는 일일 보고에서 빠져도 미확인으로 남음', () => {
   const tasks = parseTasks([['주차권', '매월', '첫 영업일']], ['T1']);
   const blind = judgeRecurring({ tasks, history: new Map(), historyState: '연결', calendar: makeCalendar(null) }, [], { report: both({ '[정기 업무]': '- 주차권' }), today });
   assert.ok(blind.items.every(i => i.status === STATUS.check && i.target === '날짜 불명'));
   const fixed = parseTasks([['SGI', '매년', '12-15']], ['T2']);
   const later = judgeRecurring({ tasks: fixed, history: new Map(), historyState: '연결', calendar }, [], { report: { ...both({ '[정기 업무]': '- 해당 없음' }), date: '2027-01-20' }, today: '2027-01-20' });
   assert.equal(item(later, 'SGI · 2026').status, STATUS.check);
-  assert.match(item(later, 'SGI · 2026').reason, /보고 범위\(30일\) 밖/);
+  assert.equal(item(later, 'SGI · 2026').report, REPORT.excluded);
+  assert.match(item(later, 'SGI · 2026').reason, /D\+36 — 기한 D\+7 경과로 일일 보고 제외 — 처리 기록 없음/);
   assert.equal(RECURRING_SINCE, '2026-11-06');
   const old = parseTasks([['법정의무교육', '매년 2회', '05-01, 11-01']], ['T1']);
   const r = judgeRecurring({ tasks: old, history: new Map(), historyState: '연결', calendar }, [], { report: both({ '[정기 업무]': '- 해당 없음' }), today });

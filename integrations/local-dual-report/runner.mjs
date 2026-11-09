@@ -360,12 +360,14 @@ async function snapshot(c, slot = '') {
     try {
       const source = await readRecurringSource(sheets.spreadsheets, c.recurringSpreadsheetId, log);
       recurring.push(...recurringLines(source, makeCalendar(await holidayData(), c), today()));
-      sources['정기 업무([MS] 김현호 업무 A:D)'] = '연결';
+      sources['정기 업무([MS] 김현호 업무 A:E)'] = '연결';
       if (source.historyState !== '연결') log('recurring history: ' + source.historyState);
       if (source.registered === false) log('recurring source not registered in Master_Sheet');
     } catch (e) {
       log('recurring tasks read failed: ' + e.message);
       sources['정기 업무(업무 탭)'] = '조회 실패';
+      // Not "해당 없음": the report must say the task tab could not be read (checked by recurringOmissions).
+      recurring.push('정기 업무 원본: 확인 불가(업무 탭 조회 실패) — 해당 없음으로 단정하지 않음');
     }
   } else sources['정기 업무(업무 탭)'] = '미설정';
   // The separate HR training roster does not define a due date; do not

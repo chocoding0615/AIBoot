@@ -1,11 +1,15 @@
 /**
- * 정기 업무 — `[MS] 김현호` › `업무` 규칙표(A 업무명, B 주기, C 기준, D 사용 여부)와 숨김 탭 `반복업무_처리이력`.
+ * 정기 업무 — `[MS] 김현호` › `업무` 규칙표(A 업무명, B 주기, C 기준, D 사용 여부, E 알림 시작)와 숨김 탭 `반복업무_처리이력`.
  *
  * 실행기·연결현황·처리 도구가 이 파일 하나의 계산을 함께 쓴다. 쓰기는 없다(쓰기는 recurring-status.mjs만).
  * 날짜를 확정할 수 없으면 추측하지 않고 unknown으로 돌려준다. 양력 설·추석 날짜를 코드에 넣지 않는다.
  *
  * 회차키는 날짜가 아니라 기간으로 만든다: 매월 `2026-11`, 연 1회 `2026`, 연 N회 `2026-2`, 명절 `2026-추석`.
  * 임시 휴무로 날짜가 밀려도 같은 회차로 남는다. 연 단위 회차는 기록 당시 기준일과 달라지면 확인 필요로 돌린다.
+ *
+ * 계산 범위(WINDOW)와 일일 보고 표시 범위(reportWindow)는 다르다. 계산 범위는 처리이력·연결현황용이라 줄이지 않는다.
+ * 일일 보고는 업무별 E열 알림 시작(D-N)부터 기한 당일, 기한 뒤 D+7까지만 싣는다. D+8부터는 보고에서만 빠지고
+ * 처리이력·연결현황에는 미확인으로 남는다.
  */
 import fs from 'node:fs';
 
@@ -15,9 +19,11 @@ export const HISTORY_TAB = '반복업무_처리이력';
 export const HISTORY_HEADER = ['업무ID', '회차키', '상태', '처리시각', '비고', '회차기준일'];
 export const ID_KEY = 'aiboot.recurring.taskId';
 export const WINDOW = { before: 30, after: 60 };
+/** 기한이 지나도 완료·보류 기록이 없으면 일일 보고에 싣는 날 수(D+1~D+7). D+8부터는 일일 보고에서 뺀다. */
+export const OVERDUE_DAYS = 7;
 export const STATES = ['완료', '보류', '미처리'];
 export const HOLIDAY_ICS = 'https://calendar.google.com/calendar/ical/ko.south_korea.official%23holiday%40group.v.calendar.google.com/public/basic.ics';
-const TASK_RANGE = `'${TASK_TAB}'!A2:D200`;
+const TASK_RANGE = `'${TASK_TAB}'!A2:E200`;
 const HISTORY_RANGE = `'${HISTORY_TAB}'!A:F`; // 행 제한 없음: 범위를 넘긴 기록이 미처리로 되돌아가면 안 된다
 
 const addDays = (ymd, n) => new Date(Date.parse(ymd + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
@@ -152,14 +158,28 @@ export function parseUse(value) {
   return { active: true, label: v, warn: `사용 여부가 '${v}' — 행 전체 값이라 회차 완료로 보지 않음` };
 }
 
-/** A:D 행과 행별 개발자 메타데이터(업무ID) → 업무 목록. 같은 ID·같은 이름은 표시해서 넘긴다. */
+/**
+ * E열 알림 시작 → 기한 며칠 전부터 일일 보고에 실을지. `D-7`처럼 쓴다(D-0은 기한 당일만).
+ * 공란·오류는 임의 기간을 넣지 않고 error로 돌려준다. 계산 범위(D-${WINDOW.after})보다 길면 회차를 계산하지 않으므로 받지 않는다.
+ */
+export function parseLead(value) {
+  const raw = clean(value), v = raw.replace(/\s/g, '').toUpperCase();
+  if (!v) return { error: '미설정' };
+  const m = /^D-(\d{1,3})$/.exec(v);
+  if (!m) return { error: `'${raw}' 해석 불가(D-7 형식)` };
+  const days = Number(m[1]);
+  if (days > WINDOW.after) return { error: `D-${days}은 계산 범위 D-${WINDOW.after}보다 김` };
+  return { days };
+}
+
+/** A:E 행과 행별 개발자 메타데이터(업무ID) → 업무 목록. 같은 ID·같은 이름은 표시해서 넘긴다. E열이 없는 옛 시트는 알림 시작 미설정이다. */
 export function parseTasks(rows, rowIds = []) {
   const tasks = [];
   rows.forEach((r, i) => {
-    const [a, b, c, d] = r.map(clean);
-    if (!a && !b && !c && !d) return;
+    const [a, b, c, d, e] = [0, 1, 2, 3, 4].map(k => clean(r[k]));
+    if (!a && !b && !c && !d) return; // A~D가 비면 업무 없음(E열만 남은 행은 무시)
     const rule = a ? parseRule(b, c) : { error: '업무명 없음' };
-    tasks.push({ row: 2 + i, title: a || `(${2 + i}행 업무명 없음)`, cycle: b || '', basis: c || '', use: parseUse(d), rule, id: rowIds[i] || null });
+    tasks.push({ row: 2 + i, title: a || `(${2 + i}행 업무명 없음)`, cycle: b || '', basis: c || '', use: parseUse(d), lead: parseLead(e), rule, id: rowIds[i] || null });
   });
   const seen = (list, value) => list.filter(x => x === value).length > 1;
   const ids = tasks.map(t => t.id).filter(Boolean), titles = tasks.map(t => t.title);
@@ -235,19 +255,41 @@ export function occurrenceState(task, occ, history) {
   return { state: h.status, why: `처리이력 ${h.status}` };
 }
 
-/** 보고에 넘길 정기 업무 줄. 완료·보류·중지만 빠진다. */
+/**
+ * 계산된 회차를 오늘 일일 보고에 실을지. 완료·보류 판정과는 별개다(완료·보류는 호출하는 쪽이 먼저 뺀다).
+ * 기한 당일과 D+1~D+7은 알림 시작과 관계없이 싣는다. 미래 회차는 E열 알림 시작 안일 때만 싣고, E열이 없으면 싣지 않는 대신
+ * 업무별로 입력 필요를 한 줄 알린다(noLead).
+ */
+export function reportWindow(task, occ) {
+  const lead = task.lead || parseLead('');
+  if (occ.d < -OVERDUE_DAYS) return { show: false, why: `D+${-occ.d} — 기한 D+${OVERDUE_DAYS} 경과로 일일 보고 제외` };
+  if (occ.d <= 0) return { show: true };
+  if (lead.error) return { show: false, noLead: true, why: `알림 시작(E열) ${lead.error}` };
+  if (occ.d > lead.days) return { show: false, why: `D-${occ.d} — 알림 시작 D-${lead.days} 전` };
+  return { show: true };
+}
+
+/**
+ * 보고에 넘길 정기 업무 줄. 완료·보류·중지와 표시 범위(reportWindow) 밖 회차가 빠진다.
+ * E열이 비거나 잘못된 업무는 회차를 숨기는 대신 `업무명: 알림 시작(E열) 미설정 — 입력 필요` 한 줄로 남겨 조용히 사라지지 않게 한다.
+ */
 export function recurringLines(source, cal, today) {
   const lines = [];
   for (const t of source.tasks) {
     if (!t.use.active) continue;
+    const lead = t.lead || parseLead('');
     const warn = t.use.warn ? ` / ${t.use.warn}` : '';
+    let next = null;
     for (const o of occurrences(t.rule, cal, today)) {
-      if (o.unknown) { lines.push(`${t.title}: 날짜 계산 불가(${o.unknown}) — 규칙 확인 필요${warn}`); continue; }
+      if (o.unknown) { lines.push(`${t.title}: 날짜 계산 불가(${o.unknown}) — 규칙 확인 필요${lead.error ? ` / 알림 시작(E열) ${lead.error}` : ''}${warn}`); continue; }
       const s = occurrenceState(t, o, source.history);
       if (s.state === '완료' || s.state === '보류') continue;
+      const w = reportWindow(t, o);
+      if (!w.show) { if (w.noLead && !next) next = o; continue; }
       const tail = s.state === '확인 필요' ? `처리이력 확인 필요(${s.why})` : '완료 여부 확인 필요';
       lines.push(`${t.title}: ${o.due} (${o.d < 0 ? 'D+' + -o.d : 'D-' + o.d}) — ${tail}${warn}`);
     }
+    if (lead.error && !t.rule.error) lines.push(`${t.title}: 알림 시작(E열) ${lead.error} — 입력 필요${next ? `, 다음 회차 ${next.due} (D-${next.d})` : ''}${warn}`);
   }
   return lines;
 }
@@ -255,12 +297,13 @@ export function recurringLines(source, cal, today) {
 const norm = s => String(s).replace(/[\s()·]/g, '').toLowerCase(); // runner.mjs norm과 같다
 /**
  * 계산된 정기 업무 회차가 보고 줄에 업무명과 날짜로 모두 있는지. 날짜는 11/02·11-02·11월 2일·2026-11-02 어느 꼴이든 된다.
- * 날짜를 계산하지 못한 업무는 업무명만 있으면 된다. 차량 보험 줄은 형식이 달라 여기서 보지 않는다.
+ * 날짜를 계산하지 못한 업무와 알림 시작 미설정 업무는 업무명만 있으면 된다. 차량 보험 줄은 형식이 달라 여기서 보지 않는다.
+ * recurring은 recurringLines 결과(표시 범위로 거른 것)이므로 표시 범위 밖 회차를 요구하지 않는다.
  */
 export function recurringOmissions(recurring = [], lines = []) {
   const out = [];
   for (const r of recurring) {
-    const dated = /^(.+?): (\d{4})-(\d{2})-(\d{2}) \(D[+-]\d+\)/.exec(r), unknown = /^(.+?): 날짜 계산 불가/.exec(r);
+    const dated = /^(.+?): (\d{4})-(\d{2})-(\d{2}) \(D[+-]\d+\)/.exec(r), unknown = /^(.+?): (?:날짜 계산 불가|알림 시작\(E열\)|확인 불가\()/.exec(r);
     if (!dated && !unknown) continue;
     const title = norm((dated || unknown)[1]);
     // 연도가 함께 적혀 있으면 연도도 맞아야 한다(2027-11-16은 2026-11-16 회차가 아니다).
@@ -293,7 +336,7 @@ export async function readRecurringSource(api, spreadsheetId, log = () => {}) {
   const grid = await api.get({ spreadsheetId, ranges: [TASK_RANGE],
     fields: 'sheets(data(rowMetadata(developerMetadata(metadataKey,metadataValue)),rowData(values(formattedValue,effectiveValue,effectiveFormat(numberFormat(type))))))' });
   const data = grid.data.sheets[0].data[0];
-  const rows = (data.rowData || []).map(r => [0, 1, 2, 3].map(i => cellText(r.values?.[i])));
+  const rows = (data.rowData || []).map(r => [0, 1, 2, 3, 4].map(i => cellText(r.values?.[i])));
   const rowIds = (data.rowMetadata || []).map(m => (m.developerMetadata || []).find(x => x.metadataKey === ID_KEY)?.metadataValue || null);
   let registered = null;
   try {
