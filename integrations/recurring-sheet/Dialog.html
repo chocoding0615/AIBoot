@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<style>
+  body { font: 13px/1.5 Arial, sans-serif; margin: 12px; color: #202124; }
+  h3 { margin: 0 0 8px; font-size: 14px; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 10px; }
+  td, th { border-bottom: 1px solid #e0e0e0; padding: 4px 6px; text-align: left; }
+  tr.sel { background: #e8f0fe; }
+  .muted { color: #5f6368; }
+  .err { color: #c5221f; }
+  textarea { width: 100%; box-sizing: border-box; height: 48px; }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  button { padding: 6px 12px; }
+</style>
+</head>
+<body>
+<h3 id="title">불러오는 중…</h3>
+<div id="msg" class="muted"></div>
+<table id="list" hidden><thead><tr><th></th><th>회차</th><th>기준일</th><th>상태</th></tr></thead><tbody></tbody></table>
+<div id="form" hidden>
+  <label>근거(완료·보류는 필수): <textarea id="note" placeholder="예: 11/16 공지 발송함"></textarea></label>
+  <div class="row">
+    <button onclick="mark('완료')">완료</button>
+    <button onclick="mark('보류')">보류</button>
+    <button onclick="mark('미처리')">다시 열기(미처리)</button>
+    <button onclick="google.script.host.close()">닫기</button>
+  </div>
+</div>
+<script>
+  var ROW = <?= row ?>, data = null, picked = null;
+  function el(id) { return document.getElementById(id); }
+  function show(text, isErr) { el('msg').textContent = text; el('msg').className = isErr ? 'err' : 'muted'; }
+  function render(r) {
+    data = r;
+    if (r.error) { el('title').textContent = ROW + '행'; show(r.error, true); return; }
+    el('title').textContent = r.row + '행 ' + r.title;
+    var body = el('list').querySelector('tbody'); body.innerHTML = '';
+    if (!r.occurrences.length) { show('계산 가능한 회차가 없습니다(앞으로 60일, 지난 400일 기준).'); return; }
+    r.occurrences.forEach(function (o, i) {
+      var tr = document.createElement('tr');
+      [['input'], [o.key], [o.due + (o.d < 0 ? ' (D+' + -o.d + ')' : ' (D-' + o.d + ')')], [o.state + (o.state === '확인 필요' ? ' — ' + o.why : '')]].forEach(function (c, j) {
+        var td = document.createElement('td');
+        if (j === 0) { var x = document.createElement('input'); x.type = 'radio'; x.name = 'occ'; x.onchange = function () { pick(i, tr); }; td.appendChild(x); }
+        else td.textContent = c[0];
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+    el('list').hidden = false; el('form').hidden = false;
+    show('처리할 회차를 고르세요.');
+  }
+  function pick(i, tr) {
+    picked = data.occurrences[i];
+    Array.prototype.forEach.call(document.querySelectorAll('tr.sel'), function (x) { x.className = ''; });
+    tr.className = 'sel';
+  }
+  function mark(status) {
+    if (!picked) return show('회차를 먼저 고르세요.', true);
+    var note = el('note').value.trim();
+    if (status !== '미처리' && !note) return show(status + '에는 근거가 필요합니다.', true);
+    show('기록 중…');
+    google.script.run
+      .withSuccessHandler(function (r) { load(r.message); })
+      .withFailureHandler(function (e) { show('실패: ' + e.message, true); })
+      .markOccurrence({ row: data.row, id: data.id, key: picked.key, status: status, note: note });
+  }
+  function load(after) {
+    picked = null;
+    google.script.run.withSuccessHandler(function (r) { render(r); if (after) show(after); }).withFailureHandler(function (e) { show('실패: ' + e.message, true); }).listOccurrences(ROW);
+  }
+  load();
+</script>
+</body>
+</html>
