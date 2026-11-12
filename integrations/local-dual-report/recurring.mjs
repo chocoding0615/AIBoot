@@ -166,9 +166,10 @@ export function parseLead(value) {
   const raw = clean(value), v = raw.replace(/\s/g, '').toUpperCase();
   if (!v) return { error: '미설정' };
   const m = /^D-(\d{1,3})$/.exec(v);
-  if (!m) return { error: `'${raw}' 해석 불가(D-7 형식)` };
+  // 입력 원문은 보고에 싣지 않는다(임의 문자열이 보고 검증 금지어와 부딪히지 않게). 오류는 고정된 종류로만 돌려준다.
+  if (!m) return { error: '형식 오류' };
   const days = Number(m[1]);
-  if (days > WINDOW.after) return { error: `D-${days}은 계산 범위 D-${WINDOW.after}보다 김` };
+  if (days > WINDOW.after) return { error: `계산 범위 D-${WINDOW.after} 초과` };
   return { days };
 }
 
@@ -279,17 +280,19 @@ export function recurringLines(source, cal, today) {
     if (!t.use.active) continue;
     const lead = t.lead || parseLead('');
     const warn = t.use.warn ? ` / ${t.use.warn}` : '';
-    let next = null;
+    let next = null, pending = false;
     for (const o of occurrences(t.rule, cal, today)) {
       if (o.unknown) { lines.push(`${t.title}: 날짜 계산 불가(${o.unknown}) — 규칙 확인 필요${lead.error ? ` / 알림 시작(E열) ${lead.error}` : ''}${warn}`); continue; }
       const s = occurrenceState(t, o, source.history);
       if (s.state === '완료' || s.state === '보류') continue;
+      pending = true;
       const w = reportWindow(t, o);
       if (!w.show) { if (w.noLead && !next) next = o; continue; }
       const tail = s.state === '확인 필요' ? `처리이력 확인 필요(${s.why})` : '완료 여부 확인 필요';
       lines.push(`${t.title}: ${o.due} (${o.d < 0 ? 'D+' + -o.d : 'D-' + o.d}) — ${tail}${warn}`);
     }
-    if (lead.error && !t.rule.error) lines.push(`${t.title}: 알림 시작(E열) ${lead.error} — 입력 필요${next ? `, 다음 회차 ${next.due} (D-${next.d})` : ''}${warn}`);
+    // 완료·보류된 단발 업무는 더 알릴 회차가 없으므로 E열 안내도 하지 않는다. 반복 업무는 회차가 창 밖이어도 안내한다.
+    if (lead.error && !t.rule.error && (t.rule.kind !== 'once' || pending)) lines.push(`${t.title}: 알림 시작(E열) ${lead.error} — 입력 필요${next ? `, 다음 회차 ${next.due} (D-${next.d})` : ''}${warn}`);
   }
   return lines;
 }
@@ -297,7 +300,8 @@ export function recurringLines(source, cal, today) {
 const norm = s => String(s).replace(/[\s()·]/g, '').toLowerCase(); // runner.mjs norm과 같다
 /**
  * 계산된 정기 업무 회차가 보고 줄에 업무명과 날짜로 모두 있는지. 날짜는 11/02·11-02·11월 2일·2026-11-02 어느 꼴이든 된다.
- * 날짜를 계산하지 못한 업무와 알림 시작 미설정 업무는 업무명만 있으면 된다. 차량 보험 줄은 형식이 달라 여기서 보지 않는다.
+ * 날짜를 계산하지 못한 업무는 업무명만 있으면 된다. 알림 시작(E열) 안내는 같은 업무의 회차 줄과 따로 '알림 시작·미설정(오류)·입력 필요' 뜻이
+ * 있어야 하고, 원본 확인 불가 줄은 '확인 불가'가 있고 '해당 없음'이 없어야 한다. 차량 보험 줄은 형식이 달라 여기서 보지 않는다.
  * recurring은 recurringLines 결과(표시 범위로 거른 것)이므로 표시 범위 밖 회차를 요구하지 않는다.
  */
 export function recurringOmissions(recurring = [], lines = []) {
@@ -309,7 +313,14 @@ export function recurringOmissions(recurring = [], lines = []) {
     // 연도가 함께 적혀 있으면 연도도 맞아야 한다(2027-11-16은 2026-11-16 회차가 아니다).
     const day = dated && new RegExp(`(?<!\\d)(?:(\\d{4})[/.-])?0?${Number(dated[3])}[/.-]0?${Number(dated[4])}(?!\\d)|(?<!\\d)(?:(\\d{4})년\\s*)?${Number(dated[3])}월\\s*${Number(dated[4])}일`, 'g');
     const dateOk = l => [...l.matchAll(day)].some(m => !(m[1] || m[2]) || (m[1] || m[2]) === dated[2]);
-    if (!lines.some(l => norm(l).includes(title) && (!day || dateOk(l)))) out.push(dated ? `${dated[1]} ${dated[3]}/${dated[4]}` : unknown[1]);
+    const kind = dated ? 'dated' : /^[^:]+: 알림 시작\(E열\)/.test(r) ? 'lead' : /^[^:]+: 확인 불가\(/.test(r) ? 'unread' : 'unknown';
+    const meaning = {
+      dated: l => dateOk(l),
+      lead: l => /알림\s*시작|E열/.test(l) && /미설정|형식\s*오류|범위\s*초과|입력\s*필요/.test(l),
+      unread: l => /확인\s*불가/.test(l) && !/해당\s*없음/.test(l),
+      unknown: () => true
+    }[kind];
+    if (!lines.some(l => norm(l).includes(title) && meaning(l))) out.push(dated ? `${dated[1]} ${dated[3]}/${dated[4]}` : kind === 'lead' ? `${unknown[1]} 알림 시작(E열) 안내` : unknown[1]);
   }
   return out;
 }

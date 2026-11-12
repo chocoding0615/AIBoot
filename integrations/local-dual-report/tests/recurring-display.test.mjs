@@ -86,7 +86,8 @@ test('E열 없는 옛 시트·공란·잘못된 값: 임의 기간 없이 업무
   assert.deepEqual(lines(old, '2026-10-01'), ['옛 업무: 알림 시작(E열) 미설정 — 입력 필요']); // 계산 범위 안 회차 없어도 사라지지 않음
   assert.deepEqual(lines(old, '2026-12-17'), ['옛 업무: 2026-12-15 (D+2) — 완료 여부 확인 필요', '옛 업무: 알림 시작(E열) 미설정 — 입력 필요']);
   const bad = parseTasks([['틀린 업무', '매년', '12-15', '사용', '일주일']], ['Y']);
-  assert.deepEqual(lines(bad, '2026-12-10'), ["틀린 업무: 알림 시작(E열) '일주일' 해석 불가(D-7 형식) — 입력 필요, 다음 회차 2026-12-15 (D-5)"]);
+  assert.deepEqual(lines(bad, '2026-12-10'), ['틀린 업무: 알림 시작(E열) 형식 오류 — 입력 필요, 다음 회차 2026-12-15 (D-5)']);
+  assert.equal(parseTasks([['긴 업무', '매년', '12-15', '사용', 'D-90']], ['Z'])[0].lead.error, '계산 범위 D-60 초과');
   // 규칙 자체가 틀린 행은 규칙 확인 줄 하나에 E열 상태를 붙인다.
   const broken = parseTasks([['규칙 없는 업무', '', '2026-11-16', '사용']], [null]);
   assert.deepEqual(lines(broken, '2026-11-09'), ['규칙 없는 업무: 날짜 계산 불가(주기 미입력 — 한 번만 할 업무는 B열에 1회) — 규칙 확인 필요 / 알림 시작(E열) 미설정']);
@@ -102,13 +103,47 @@ test('업무ID 미지정 행도 표시 범위 안에서는 보고되고 연결�
   assert.match(r.items[0].reason, /업무ID 미지정/);
 });
 
-test('누락 검사는 표시 범위의 줄만 요구: D-60 미래 회차·D+8 회차를 요구하지 않고, 미설정 줄은 업무명만 있으면 됨', () => {
+test('누락 검사는 표시 범위의 줄만 요구: D-60 미래 회차·D+8 회차를 요구하지 않고, 미설정 줄은 안내 뜻까지 있어야 함', () => {
   const t = parseTasks([['주차권', '매월', '첫 영업일', '', 'D-3'], ['옛 업무', '매년', '12-15']], ['P', 'X']);
   const rec = lines(t, '2026-11-09'); // 11/02는 D+7, 12/01·01/04는 표시 범위 밖
   assert.deepEqual(rec, ['주차권: 2026-11-02 (D+7) — 완료 여부 확인 필요', '옛 업무: 알림 시작(E열) 미설정 — 입력 필요, 다음 회차 2026-12-15 (D-36)']);
   assert.deepEqual(recurringOmissions(rec, ['- 11/02 주차권 — 완료 여부 확인 필요', '- 옛 업무: 알림 시작 미설정, 입력 필요']), []);
-  assert.deepEqual(recurringOmissions(rec, ['- 11/02 주차권']), ['옛 업무']);
+  assert.deepEqual(recurringOmissions(rec, ['- 11/02 주차권']), ['옛 업무 알림 시작(E열) 안내']);
   assert.deepEqual(recurringOmissions(lines(t, '2026-11-10'), ['- 옛 업무 알림 시작 입력 필요']), []); // 11/02는 D+8이라 요구하지 않음
+});
+
+test('E열 안내는 같은 업무의 회차 줄로 대신할 수 없음 (Codex F2)', () => {
+  const old = parseTasks([['옛 업무', '매년', '12-15', '사용']], ['X']);
+  const rec = lines(old, '2026-12-17'); // D+2 회차 줄 + E열 안내 줄
+  assert.equal(rec.length, 2);
+  assert.deepEqual(recurringOmissions(rec, ['- 12/15 옛 업무 — 완료 여부 확인 필요']), ['옛 업무 알림 시작(E열) 안내']);
+  assert.deepEqual(recurringOmissions(rec, ['- 12/15 옛 업무 — 완료 여부 확인 필요', '- 옛 업무 — 알림 시작(E열) 미설정, 입력 필요']), []);
+  assert.deepEqual(recurringOmissions(rec, ['- 12/15 옛 업무 — 완료 여부 확인 필요, 알림 시작(E열) 미설정·입력 필요']), []); // 한 줄에 둘 다 있으면 충분
+});
+
+test('E열 입력 원문은 보고에 싣지 않고, 안내 줄은 실행기의 본문 금지어 검사에 걸리지 않음 (Codex F3)', () => {
+  const src = fs.readFileSync(path.join(HERE, '..', 'runner.mjs'), 'utf8');
+  // validate()의 본문 전체 검사(`if (/…/.test(chat))`)를 실행기 원문에서 그대로 가져온다.
+  const bans = [...src.matchAll(/if \(\/(.+?)\/\.test\(chat\)\)/g)].map(m => new RegExp(m[1]));
+  assert.ok(bans.length >= 4);
+  for (const raw of ['검침', '미납', '이지화물', '생각공장 재확인', 'D+3', '']) {
+    const t = parseTasks([['가 업무', '매년', '12-15', '사용', raw]], ['A']);
+    for (const l of lines(t, '2026-12-10')) {
+      assert.equal(!!raw && l.includes(raw), false, l);
+      for (const b of bans) assert.equal(b.test(l), false, `${b} ${l}`);
+    }
+  }
+});
+
+test('완료·보류된 단발 업무는 E열이 없어도 더 안내하지 않음, 반복 업무는 계속 안내', () => {
+  const once = parseTasks([['공지 업무', '1회', '2026-11-16', '사용']], ['O']);
+  assert.deepEqual(lines(once, '2026-11-10'), ['공지 업무: 알림 시작(E열) 미설정 — 입력 필요, 다음 회차 2026-11-16 (D-6)']);
+  const done = parseHistory([HISTORY_HEADER, ['O', '1회', '완료', 'x', '근거', '2026-11-16']]);
+  assert.deepEqual(lines(once, '2026-11-10', done), []);
+  assert.deepEqual(lines(once, '2027-03-01'), []); // 계산 범위 밖으로 지난 단발 업무
+  const yearly = parseTasks([['연 업무', '매년', '12-15', '사용']], ['Y']);
+  const doneYear = parseHistory([HISTORY_HEADER, ['Y', '2026', '완료', 'x', '근거', '2026-12-15']]);
+  assert.deepEqual(lines(yearly, '2026-12-10', doneYear), ['연 업무: 알림 시작(E열) 미설정 — 입력 필요']);
 });
 
 test('원본 조회 실패: 실행기는 "해당 없음" 대신 확인 불가 줄을 넘기고 누락 검사가 그 줄을 요구', () => {
@@ -117,6 +152,10 @@ test('원본 조회 실패: 실행기는 "해당 없음" 대신 확인 불가 �
   assert.ok(line, 'runner pushes a 확인 불가 line on read failure');
   assert.deepEqual(recurringOmissions([line], ['- 해당 없음']), ['정기 업무 원본']);
   assert.deepEqual(recurringOmissions([line], ['- 정기 업무 원본: 확인 불가(조회 실패)']), []);
+  // Codex F1: 업무명만 맞추고 해당 없음으로 쓰면 통과하지 않는다.
+  assert.deepEqual(recurringOmissions([line], ['- 정기 업무 원본: 해당 없음']), ['정기 업무 원본']);
+  assert.deepEqual(recurringOmissions([line], ['- 정기 업무 원본: 확인 불가, 해당 없음']), ['정기 업무 원본']);
+  assert.ok(runner.includes('"확인 불가" 줄은 "해당 없음"으로 바꾸지 않는다'));
 });
 
 test('원본 읽기: 업무 탭 A:E를 읽고, E열 없는 행은 미설정', async () => {
