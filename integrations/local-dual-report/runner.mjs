@@ -144,7 +144,7 @@ function fixedSchedule(date) {
   for (const line of md.split('\n')) {
     const c = line.split('|').map(x => x.replace(/\*\*/g, '').trim());
     if (c.length < 7 || !/^\d+$/.test(c[1])) continue;
-    const [, row, vendor, , basis, , note] = c;
+    const [, row, vendor, period, basis, , note] = c;
     if (/비활성|종료/.test(note) && /이지화물/.test(vendor)) continue;
     let day = null;
     if (/고지서/.test(basis)) day = null;
@@ -157,9 +157,30 @@ function fixedSchedule(date) {
     // billing cycle. Until the actual cycle is confirmed, never schedule a
     // monthly payable for 매장 안전관리자.
     if (vendor === '매장 안전관리자') day = null;
-    out.push({ row: Number(row), vendor, basis, day });
+    out.push({ row: Number(row), vendor, basis, period, day });
   }
   return out;
+}
+
+/** 연노랑 mark of the JP매월 지출 month column a due item belongs to. Only calendar-month (월 1일~말일) "익월" vendors have a
+ *  confirmed column (due month − 1); any other cycle, or a missing year/month/vendor cell, is never treated as written. */
+function fixedMark(jp, s, due) {
+  const need = '지출결의 작성 여부 확인 필요';
+  if (!/^월\s*1일\s*~\s*말일$/.test(s.period || '') || !/^익월/.test(s.basis || '')) return `대상 월 열 미확정 — ${need}`;
+  const [y, m] = due.split('-').map(Number);
+  const ty = m === 1 ? y - 1 : y, tm = m === 1 ? 12 : m - 1, label = `${tm}월분 열`;
+  const t = c => String(c?.t || '').replace(/\s+/g, '');
+  const start = (jp || []).findIndex(r => t(r[0]) === `${ty}년`);
+  if (start < 0) return `${label} 확인 불가 — ${need}`;
+  let end = jp.findIndex((r, i) => i > start && /^\d{4}년$/.test(t(r[0])));
+  if (end < 0) end = jp.length;
+  const block = jp.slice(start + 1, end);
+  const head = block.find(r => r.some(c => /^\d{2}월$/.test(t(c))));
+  const only = name => { const i = (head || []).map((c, j) => t(c) === name ? j : -1).filter(j => j >= 0); return i.length === 1 ? i[0] : -1; };
+  const col = only(`${String(tm).padStart(2, '0')}월`), item = only('항목');
+  const rows = item < 0 ? [] : block.filter(r => t(r[item]) === s.vendor.replace(/\s+/g, ''));
+  if (col < 0 || rows.length !== 1) return `${label} 확인 불가 — ${need}`;
+  return rows[0][col]?.yellow ? `${label} 연노랑 — 지출결의 작성·제출 표시 확인(결재 승인·납부 완료 아님)` : `${label} 연노랑 없음 — ${need}`;
 }
 
 /* ---------- read-only snapshot ---------- */
@@ -296,7 +317,7 @@ async function snapshot(c, slot = '') {
   sources['고정비(JP매월 지출)'] = '연결';
   sources['사용자 확인(AIBoot_데일리마감)'] = '연결';
   const isYellow = bg => bg && Math.round((bg.red || 0) * 255) === 255 && Math.round((bg.green || 0) * 255) === 242 && Math.round((bg.blue || 0) * 255) === 204;
-  const out = [];
+  const out = [], jp = [];
   for (const s of r.data.sheets) {
     out.push(`## ${s.properties.title}`);
     for (const row of s.data[0].rowData || []) {
@@ -304,6 +325,7 @@ async function snapshot(c, slot = '') {
         const t = (v.formattedValue || '').replace(/\s+/g, ' ').trim();
         return t && s.properties.title === 'JP매월 지출' && isYellow(v.effectiveFormat?.backgroundColor) ? t + '(연노랑)' : t;
       });
+      if (s.properties.title === 'JP매월 지출') jp.push((row.values || []).map(v => ({ t: v.formattedValue || '', yellow: !!isYellow(v.effectiveFormat?.backgroundColor) })));
       if (cells.some(Boolean)) out.push(cells.join(' | '));
     }
   }
@@ -397,7 +419,7 @@ async function snapshot(c, slot = '') {
   sources['회사 자체 캘린더'] = '미연결';
   const ch = await chatSnapshot(c, today(), { slot });
   sources['지정 Chat 스페이스 2개'] = ch.status;
-  return { text: out.join('\n'), sources, contracts, licenses, welfare, recurring, chatText: ch.status === '연결' || /^일부/.test(ch.status) ? ch.text : '', chatReadAt: ch.readAt };
+  return { text: out.join('\n'), jp, sources, contracts, licenses, welfare, recurring, chatText: ch.status === '연결' || /^일부/.test(ch.status) ? ch.text : '', chatReadAt: ch.readAt };
 }
 
 /** Facts computed in code so both agents receive identical dates (no date arithmetic left to the model). */
@@ -429,7 +451,7 @@ async function facts(date, c, snap) {
     `휴일 결제일 이동 규칙: 미확정 — 예정일을 옮기지 말 것`,
     '',
     `[고정비 임박 예정 — ${date.slice(5)}~${windowDates[IMMINENT_DAYS].slice(5)}] 오늘 남은 일 [고정비]에는 이 목록 중 실제 미처리 항목만 넣는다`,
-    ...(imminent.length ? imminent.map(s => `- ${s.vendor}: ${s.date.slice(5).replace('-', '/')} (${s.basis})`) : ['- 없음']),
+    ...(imminent.length ? imminent.map(s => `- ${s.vendor}: ${s.date.slice(5).replace('-', '/')} (${s.basis}) — ${fixedMark(snap.jp, s, s.date)}`) : ['- 없음']),
     '',
     `[고정비 이번 달 규칙상 예정일 — 참고용, 임박이 아니면 오늘 남은 일에 넣지 말 것] (FIXED-EXPENSES-V1 표에서 계산, 실제 고지서·납부와 다를 수 있음)`,
     ...sched.filter(s => s.day).map(s => `- ${s.vendor}: ${date.slice(5, 7)}/${String(s.day).padStart(2, '0')} (${s.basis})`),
@@ -493,6 +515,7 @@ function prompt(slot, date, snap, f) {
     `- 자료 연결 상태가 "연결"이 아닌 분야는 "- 확인 불가(원본 미연결)"로 쓰고 "해당 없음"으로 단정하지 않는다. [복지]·[정기 업무]는 [계산된 사실]의 해당 목록만 근거로 쓴다.`,
     '- 날짜 업무는 "N일 납부: 업체A·업체B — 처리 내용" 꼴, 날짜 오름차순, 같은 날짜·같은 처리는 한 줄로 묶음. 날짜 없는 업무는 분야 마지막.',
     '- [계약서]·[라이센스]는 D-7 → D-30 → D-60 순서로 "- D-30 n건 (대상 요약)" 꼴.',
+    '- [고정비 임박 예정] 각 줄 끝의 "…월분 열" 판정은 코드가 해당 업체·대상 월 셀 색으로 확인한 것이므로 원본 표의 다른 월 열로 다시 판단하지 않는다. "연노랑 — 지출결의 작성·제출 표시 확인"인 업체는 지출결의 작성 여부를 묻거나 작성·상신을 요청하지 말고 "지출결의 작성 완료(연노랑)"로 쓴다. 결재 승인·납부 완료로 쓰지 않는다.',
     '- 연노랑(연노랑) 표시는 지출결의 작성·제출 표시다. 표시가 없으면 작성 여부를 알 수 없다는 뜻이므로 지출결의·결재를 "미작성·미제출·미처리"로 쓰지 말고 "지출결의 작성 여부 확인 필요"로 쓴다.',
     '- [정기 업무] 줄에는 [계산된 사실]의 회차마다 업무명과 월/일(예: 11/16)을 함께 쓴다. "16일"처럼 일만 쓰지 않는다. 목록의 회차를 빼지 않는다. 목록은 이미 일일 보고 표시 범위로 거른 것이므로 목록에 있는 업무의 다른 회차(목록에 없는 날짜)를 덧붙이지 않는다.',
     '- [정기 업무] 목록의 "알림 시작(E열) … 입력 필요" 줄은 같은 업무의 회차 줄과 합치지 말고 한 줄로 "업무명 — 알림 시작(E열) 미설정, 입력 필요"처럼 쓴다(날짜는 없어도 된다). "확인 불가" 줄은 "해당 없음"으로 바꾸지 않는다.',
