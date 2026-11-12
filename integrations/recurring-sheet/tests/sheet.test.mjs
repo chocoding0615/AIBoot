@@ -3,20 +3,23 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { FakeSheet, FakeSpreadsheet, ICS, kstDate, loadGas, sheetsApi } from './fake-gas.mjs';
 import { build, OUT } from '../build.mjs';
+import { judgeRecurring } from '../../../tools/fixed-expense-flow/domains.mjs';
+import { STATUS } from '../../../tools/fixed-expense-flow/judge.mjs';
 import { HISTORY_HEADER, ID_KEY, makeCalendar, occurrences, parseHistory, parseHolidayFeed, parseTasks, readRecurringSource, recurringLines } from '../../local-dual-report/recurring.mjs';
 
 const TITLE = '[MS] 김현호';
 const IDS = ['Te0265aed', 'T3e06e25e', 'T0a4e1f1d', 'Tf32918f7', 'T66645e27'];
-/** 실제 시트와 같은 꼴의 견본(업무명은 가짜). 2~6행은 ID 5개, 7행은 날짜 셀 단발 업무, ID 없음. */
+/** 실제 시트와 같은 꼴의 견본(업무명은 가짜). 2~6행은 ID 5개, 7행은 날짜 셀 단발 업무, ID 없음.
+ *  E열 알림 시작: 반복 업무는 D-60(계산 범위 전체를 보이게 해 기존 회차 흐름을 그대로 봄), 7행은 D-7. */
 function sample({ history = true, row7Cycle = '1회' } = {}) {
   const tasks = new FakeSheet('업무', [
-    ['업무명', '주기', '기준', '사용 여부'],
-    ['주차권 구매', '매월', '첫 영업일', '사용'],
-    ['교육 이수', '매년 2회', '05-01, 11-01', '사용'],
-    ['보증보험', '매년', '12-15', '사용'],
-    ['명절 선물', '매년 2회', '설·추석 -10영업일', '사용'],
-    ['분기 점검', '분기', '첫 영업일', '사용'],
-    ['공지 업무', row7Cycle, kstDate('2026-11-16'), '사용']
+    ['업무명', '주기', '기준', '사용 여부', '알림 시작'],
+    ['주차권 구매', '매월', '첫 영업일', '사용', 'D-60'],
+    ['교육 이수', '매년 2회', '05-01, 11-01', '사용', 'D-60'],
+    ['보증보험', '매년', '12-15', '사용', 'D-60'],
+    ['명절 선물', '매년 2회', '설·추석 -10영업일', '사용', 'D-60'],
+    ['분기 점검', '분기', '첫 영업일', '사용', 'D-60'],
+    ['공지 업무', row7Cycle, kstDate('2026-11-16'), '사용', 'D-7']
   ], 1763835306);
   IDS.forEach((id, i) => tasks.meta[i + 1].push({ key: ID_KEY, value: id }));
   const other = new FakeSheet('기타', [['건드리면 안 되는 값', 'x'], ['2026-11', 'y']]);
@@ -29,7 +32,7 @@ const snapshot = sheet => JSON.stringify(sheet.values());
 const editA = (gas, sheet, row) => gas.onEdit({ range: sheet.getRange(row, 1) });
 /** 정기 보고(Node)가 같은 시트 상태를 읽었을 때의 [정기 업무] 줄. */
 function reportLines({ tasks, hist }, today = '2026-11-09') {
-  const rows = tasks.values().slice(1).map(r => r.slice(0, 4).map(v => Object.prototype.toString.call(v) === '[object Date]' ? new Date(v.getTime() + 9 * 3600000).toISOString().slice(0, 10) : String(v ?? '')));
+  const rows = tasks.values().slice(1).map(r => r.slice(0, 5).map(v => Object.prototype.toString.call(v) === '[object Date]' ? new Date(v.getTime() + 9 * 3600000).toISOString().slice(0, 10) : String(v ?? '')));
   const rowIds = ids(tasks).slice(1).map(l => l[0] || null);
   const history = parseHistory(hist.values().map(r => r.map(v => String(v ?? ''))));
   return recurringLines({ tasks: parseTasks(rows, rowIds), history }, makeCalendar(parseHolidayFeed(ICS)), today);
@@ -110,7 +113,8 @@ test('기준일 변경: 단발 업무 날짜를 고치면 완료 기록이 확�
   gas.markOccurrence({ row: 7, id, key: '1회', due: '2026-11-16', status: '완료', note: '공지 발송함' });
   s.tasks.cells[6][2].v = kstDate('2026-11-18');
   assert.equal(gas.listOccurrences(7).occurrences[0].state, '확인 필요');
-  assert.ok(reportLines(s).some(l => l.startsWith('공지 업무: 2026-11-18') && l.includes('기록 당시 기준일과 달라짐')));
+  assert.equal(reportLines(s).some(l => l.startsWith('공지 업무')), false, '11/09에는 D-9라 E열 D-7 전');
+  assert.ok(reportLines(s, '2026-11-11').some(l => l.startsWith('공지 업무: 2026-11-18') && l.includes('기록 당시 기준일과 달라짐')));
 });
 
 test('거부: 근거 없는 완료, 60일 넘은 미래 회차, 규칙 오류 행, ID 충돌, 머리글 변경, 다른 파일', () => {
@@ -151,8 +155,8 @@ test('다른 탭 편집은 무시하고, 어떤 동작도 다른 탭·업무 탭
   const other = snapshot(s.other), task = snapshot(s.tasks);
   gas.onEdit({ range: s.other.getRange(1, 1) });
   assert.equal(ids(s.tasks)[6].length, 0, '다른 탭 편집으로는 ID 지정 안 함');
-  gas.onEdit({ range: s.tasks.getRange(7, 5) });
-  assert.equal(ids(s.tasks)[6].length, 0, 'E열 편집은 무시');
+  gas.onEdit({ range: s.tasks.getRange(7, 6) });
+  assert.equal(ids(s.tasks)[6].length, 0, 'F열 이후 편집은 무시');
   assert.match(gas.listOccurrences(2).error, /미생성/);
   assert.equal(gas.setupHistoryTab_().created, true);
   assert.equal(gas.setupHistoryTab_().created, false, '두 번 만들지 않음');
@@ -229,7 +233,7 @@ test('A~D를 모두 비운 행은 ID를 떼고, 그 자리에 새 업무를 쓰�
   s.tasks.cells[6].forEach(c => { c.v = ''; });
   editA(gas, s.tasks, 7);
   assert.equal(ids(s.tasks)[6].length, 0, '비운 행의 ID 제거');
-  s.tasks.cells[6] = [{ v: '다른 공지' }, { v: '1회' }, { v: kstDate('2026-11-16') }, { v: '사용' }];
+  s.tasks.cells[6] = [{ v: '다른 공지' }, { v: '1회' }, { v: kstDate('2026-11-16') }, { v: '사용' }, { v: 'D-7' }];
   editA(gas, s.tasks, 7);
   assert.notEqual(ids(s.tasks)[6][0], old);
   assert.ok(reportLines(s).some(l => l.startsWith('다른 공지: 2026-11-16')), '새 업무는 보고에 나옴');
@@ -237,4 +241,39 @@ test('A~D를 모두 비운 행은 ID를 떼고, 그 자리에 새 업무를 쓰�
   s.tasks.cells[1][0].v = '주차권 구매(본사)';
   editA(gas, s.tasks, 2);
   assert.equal(ids(s.tasks)[1][0], IDS[0]);
+});
+
+test('실사용 흐름: 시트 등록 → ID → E열 기간에만 보고 → 시트에서 완료 → 다음 보고 제외 → 미처리 회차 D+8 제외·이력 보존', () => {
+  const s = sample();
+  // 1. 사용자가 빈 행에 새 업무를 쓴다(E열 알림 시작 D-3).
+  s.tasks.cells.push([{ v: '점검 업무' }, { v: '매년 2회' }, { v: '12-10, 12-20' }, { v: '사용' }, { v: 'D-3' }]); s.tasks.meta.push([]);
+  const row = s.tasks.cells.length, before = snapshot(s.tasks);
+  // 2. 편집 직후 onEdit가 ID를 붙인다. 셀 값은 그대로.
+  const g1 = loadGas({ ss: s.ss, ics: ICS, now: '2026-12-01 09:00' }).gas;
+  editA(g1, s.tasks, row);
+  const id = ids(s.tasks)[row - 1][0];
+  assert.match(id, /^T[0-9a-f]{8}$/);
+  assert.equal(snapshot(s.tasks), before);
+  // 3·4. 정기 보고(Node)는 E열 기간에만 그 회차를 싣는다. 오전·오후는 같은 날 같은 목록이다.
+  const mine = d => reportLines(s, d).filter(l => l.startsWith('점검 업무'));
+  assert.deepEqual(mine('2026-12-06'), [], 'D-4: 알림 시작 전');
+  assert.deepEqual(mine('2026-12-07'), ['점검 업무: 2026-12-10 (D-3) — 완료 여부 확인 필요']);
+  // 5. 사용자가 시트 메뉴 대화상자에서 12/10 회차를 완료 처리한다.
+  const g2 = loadGas({ ss: s.ss, ics: ICS, now: '2026-12-10 11:00' }).gas;
+  const occ = g2.listOccurrences(row).occurrences.find(o => o.due === '2026-12-10');
+  assert.equal(g2.markOccurrence({ row, id, key: occ.key, due: occ.due, status: '완료', note: '점검함' }).op, 'append');
+  // 6. 다음 보고에서 완료 회차는 빠진다.
+  assert.deepEqual(mine('2026-12-10'), []);
+  assert.deepEqual(mine('2026-12-17'), ['점검 업무: 2026-12-20 (D-3) — 완료 여부 확인 필요']);
+  // 7. 처리하지 않은 12/20 회차는 D+7까지 보고, D+8부터 일일 보고에서 빠지지만 이력·연결현황에는 남는다.
+  assert.deepEqual(mine('2026-12-27'), ['점검 업무: 2026-12-20 (D+7) — 완료 여부 확인 필요']);
+  assert.deepEqual(mine('2026-12-28'), []);
+  const rows = s.hist.values().filter(r => r[0] === id);
+  assert.equal(rows.length, 1);
+  assert.deepEqual([rows[0][1], rows[0][2], rows[0][5]], [occ.key, '완료', '2026-12-10']);
+  const taskRows = s.tasks.values().slice(1).map(r => r.slice(0, 5).map(v => Object.prototype.toString.call(v) === '[object Date]' ? new Date(v.getTime() + 9 * 3600000).toISOString().slice(0, 10) : String(v ?? '')));
+  const src = { tasks: parseTasks(taskRows, ids(s.tasks).slice(1).map(l => l[0] || null)), history: parseHistory(s.hist.values().map(r => r.map(v => String(v ?? '')))), historyState: '연결', calendar: makeCalendar(parseHolidayFeed(ICS)) };
+  const late = judgeRecurring(src, [], { report: null, today: '2026-12-28' }).items.find(i => i.vendor.startsWith('점검 업무') && i.target === '2026-12-20');
+  assert.equal(late.status, STATUS.check, '연결현황에는 미확인으로 남음');
+  assert.match(late.reason, /D\+8/);
 });

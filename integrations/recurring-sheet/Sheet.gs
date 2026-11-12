@@ -9,7 +9,8 @@
  */
 
 var AIBOOT_TZ = 'Asia/Seoul';
-var AIBOOT_LAST_ROW = 200; // recurring.mjs TASK_RANGE A2:D200과 같다
+var AIBOOT_LAST_ROW = 200; // recurring.mjs TASK_RANGE A2:E200과 같다
+var AIBOOT_COLS = 5;       // A 업무명 · B 주기 · C 기준 · D 사용 여부 · E 알림 시작
 
 /* ---------- 메뉴와 자동 ID ---------- */
 
@@ -24,11 +25,11 @@ function onOpen() {
   try { assignNewIds_(); } catch (e) { console.warn('onOpen ID 지정 건너뜀: ' + e.message); }
 }
 
-/** 단순 트리거: `업무` 탭 A~D열을 고치면 ID 없는 행에 ID를 붙인다. 다른 탭 편집은 무시한다. */
+/** 단순 트리거: `업무` 탭 A~E열을 고치면 ID 없는 행에 ID를 붙인다. 다른 탭 편집은 무시한다. */
 function onEdit(e) {
   var range = e && e.range;
   if (!range || range.getSheet().getName() !== Recurring.TASK_TAB) return;
-  if (range.getColumn() > 4 || range.getLastRow() < 2 || range.getRow() > AIBOOT_LAST_ROW) return;
+  if (range.getColumn() > AIBOOT_COLS || range.getLastRow() < 2 || range.getRow() > AIBOOT_LAST_ROW) return;
   try { assignNewIds_(); } catch (err) { console.warn('onEdit ID 지정 건너뜀: ' + err.message); }
 }
 
@@ -59,18 +60,20 @@ function cellText_(value, display) {
 function readSource_(ss) {
   var sheet = ss.getSheetByName(Recurring.TASK_TAB);
   if (!sheet) throw new Error('업무 탭 없음');
-  var range = sheet.getRange(2, 1, AIBOOT_LAST_ROW - 1, 4);
+  var range = sheet.getRange(2, 1, AIBOOT_LAST_ROW - 1, AIBOOT_COLS);
   var values = range.getValues(), display = range.getDisplayValues();
   var last = values.length;
   while (last > 0 && display[last - 1].every(function (c) { return String(c).trim() === ''; })) last--;
   var rows = [];
-  for (var i = 0; i < last; i++) rows.push([0, 1, 2, 3].map(function (c) { return cellText_(values[i][c], display[i][c]); }));
+  for (var i = 0; i < last; i++) rows.push([0, 1, 2, 3, 4].map(function (c) { return cellText_(values[i][c], display[i][c]); }));
+  // 업무가 있는지는 A~D로만 본다(recurring.mjs parseTasks와 같다). E열만 남은 행은 업무가 아니다.
+  var blankTask = function (r) { return r.slice(0, 4).every(function (c) { return String(c).trim() === ''; }); };
   var rowIds = [], idMeta = [];
   sheet.createDeveloperMetadataFinder().withKey(Recurring.ID_KEY).find().forEach(function (md) {
     var loc = md.getLocation();
     if (String(loc.getLocationType()) !== 'ROW') return;
     var row = loc.getRow().getRow();
-    idMeta.push({ row: row, md: md, empty: row >= 2 && (row - 2 >= last || display[row - 2].every(function (c) { return String(c).trim() === ''; })) });
+    idMeta.push({ row: row, md: md, empty: row >= 2 && (row - 2 >= last || blankTask(display[row - 2])) });
     if (row >= 2 && row <= AIBOOT_LAST_ROW && rowIds[row - 2] == null) rowIds[row - 2] = md.getValue();
   });
   for (var j = 0; j < last; j++) if (rowIds[j] === undefined) rowIds[j] = null;
