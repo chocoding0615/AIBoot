@@ -10,7 +10,8 @@ const FEED = [['20260216', '설날 연휴'], ['20260217', '설날'], ['20260218'
 const holidays = parseHolidayFeed(FEED);
 const cal = makeCalendar(holidays);
 const today = '2026-11-06';
-const rows = [['생각공장 주차권 구매', '매월', '첫 영업일'], ['어버이날 복지 포인트', '매년', '05-08'], ['법정의무교육', '매년 2회', '05-01, 11-01'], ['명절 제품지원', '매년 2회', '설·추석 -10영업일'], ['SGI보증보험 ', '매년 1회', '12-15']];
+// E열 D-60 = 계산 범위 전체를 표시 범위로 둔 고정 시험값(회차 계산 회귀용). 표시 범위 시험은 recurring-display.test.mjs.
+const rows = [['생각공장 주차권 구매', '매월', '첫 영업일', '', 'D-60'], ['어버이날 복지 포인트', '매년', '05-08', '', 'D-60'], ['법정의무교육', '매년 2회', '05-01, 11-01', '', 'D-60'], ['명절 제품지원', '매년 2회', '설·추석 -10영업일', '', 'D-60'], ['SGI보증보험 ', '매년 1회', '12-15', '', 'D-60']];
 const rule = (a, b) => parseRule(a, b);
 const dues = (r, c = cal, t = today, o) => occurrences(r, c, t, o).map(x => x.due || x.unknown);
 const source = (extra = {}) => ({ tasks: parseTasks(rows, ['T1', 'T2', 'T3', 'T4', 'T5']), history: new Map(), historyState: '연결', ...extra });
@@ -138,7 +139,7 @@ test('비고 원문은 파싱 결과에 남지 않음', () => {
 
 test('업무ID: 이름 변경·규칙 변경·행 이동에도 같은 회차 상태, 동명 업무는 분리, 같은 ID는 차단', () => {
   const hist = parseHistory([HISTORY_HEADER, ['T9', '2026', '완료', 'x', '근거', '2026-12-15']]);
-  const renamed = parseTasks([['다른 줄', '매년', '01-01'], ['SGI 보증보험 갱신', '매년 1회', '12-15']], ['T8', 'T9']);
+  const renamed = parseTasks([['다른 줄', '매년', '01-01', '', 'D-60'], ['SGI 보증보험 갱신', '매년 1회', '12-15', '', 'D-60']], ['T8', 'T9']);
   assert.equal(recurringLines({ tasks: renamed, history: hist }, cal, today).some(l => l.includes('SGI')), false);
   const same = parseTasks([['주차권', '매월', '첫 영업일'], ['주차권', '매월', '첫 영업일']], ['A', 'B']);
   assert.ok(same.every(t => t.sameTitle && !t.idConflict));

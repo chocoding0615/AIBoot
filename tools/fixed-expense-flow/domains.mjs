@@ -6,7 +6,7 @@
  * 금액·연락처·개인 이름·메시지 원문은 결과에 넣지 않는다.
  */
 import { REPORT, STATUS, addDay } from './judge.mjs';
-import { HISTORY_TAB, WINDOW, occurrenceState, occurrences } from '../../integrations/local-dual-report/recurring.mjs';
+import { HISTORY_TAB, WINDOW, occurrenceState, occurrences, reportWindow } from '../../integrations/local-dual-report/recurring.mjs';
 
 export const PARTIAL = '건수만 포함';
 /** A real calendar date only: 2026-99-01 and 2026-02-31 are not dates. */
@@ -224,8 +224,12 @@ function judgeOccurrence(t, o, source, ctx) {
   if (state.state === '확인 필요') return { ...item, status: STATUS.check, report: REPORT.unknown, reason: state.why };
   if (t.use.warn) return { ...item, status: STATUS.check, report: REPORT.unknown, reason: t.use.warn };
   if (!t.id) return { ...item, status: STATUS.check, report: REPORT.unknown, reason: '업무ID 미지정 — 처리이력과 연결할 수 없음(--init 필요)' };
-  if (d > WINDOW.after) return { ...item, status: STATUS.ok, report: REPORT.excluded, reason: `D-${d} — 보고 범위(D-${WINDOW.after}) 전` };
-  if (d < -WINDOW.before) return { ...item, status: STATUS.check, report: REPORT.missing, reason: `D+${-d}, 처리 기록 없음 — 실행기 보고 범위(${WINDOW.before}일) 밖이라 보고되지 않음` };
+  if (d > WINDOW.after) return { ...item, status: STATUS.ok, report: REPORT.excluded, reason: `D-${d} — 계산 범위(D-${WINDOW.after}) 전` };
+  // 일일 보고 표시 범위는 실행기와 같은 reportWindow. 보고에서 빠져도 기한 지난 회차는 미확인으로 남긴다.
+  const w = reportWindow(t, o);
+  if (!w.show && d < 0) return { ...item, status: STATUS.check, report: REPORT.excluded, reason: `${w.why} — 처리 기록 없음, 완료·보류 기록 필요` };
+  if (!w.show && w.noLead) return { ...item, status: STATUS.check, report: REPORT.unknown, reason: `${w.why} — 일일 보고에는 입력 필요 한 줄만 실림` };
+  if (!w.show) return { ...item, status: STATUS.ok, report: REPORT.excluded, reason: w.why };
   if (!report) return noReport(item);
   const results = {};
   for (const a of report.agents.filter(x => !x.unread)) {

@@ -31,7 +31,7 @@ test('매년 규칙에 연도 붙은 날짜 셀이 와도 월·일만 씀', () =
 });
 
 test('실제 7행: 공지 1회 업무는 그 해에만 보고, 완료 기록 후 빠짐, 날짜를 고치면 확인 필요', () => {
-  const tasks = parseTasks([['법정의무교육(공지)', '1회', '2026-11-16', '사용']], ['T7']);
+  const tasks = parseTasks([['법정의무교육(공지)', '1회', '2026-11-16', '사용', 'D-7']], ['T7']);
   assert.deepEqual(recurringLines({ tasks, history: new Map() }, cal, '2026-11-09'), ['법정의무교육(공지): 2026-11-16 (D-7) — 완료 여부 확인 필요']);
   const done = parseHistory([HISTORY_HEADER, ['T7', '1회', '완료', 'x', '공지 발송', '2026-11-16']]);
   assert.deepEqual(recurringLines({ tasks, history: done }, cal, '2026-11-09'), []);
