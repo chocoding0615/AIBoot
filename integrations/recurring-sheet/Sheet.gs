@@ -1,0 +1,242 @@
+/**
+ * `[MS] 김현호` 시트에 붙이는(컨테이너 바인딩) Apps Script — 정기 업무 ID·회차 처리를 시트 안에서 한다.
+ * 계산은 dist/Recurring.gs(정기 보고와 같은 원문)가 하고, 이 파일은 시트를 읽고 쓰는 일만 한다.
+ *
+ * 쓰는 곳은 두 군데뿐이다.
+ *   - `업무` 탭 행의 개발자 메타데이터 `aiboot.recurring.taskId` (셀 값은 절대 쓰지 않는다)
+ *   - 숨김 탭 `반복업무_처리이력`의 A:F
+ * 다른 탭, 다른 파일, 웹훅, 정기 보고 실행기는 건드리지 않는다. 트리거를 설치하는 코드는 없다.
+ */
+
+var AIBOOT_TZ = 'Asia/Seoul';
+var AIBOOT_LAST_ROW = 200; // recurring.mjs TASK_RANGE A2:E200과 같다
+var AIBOOT_COLS = 5;       // A 업무명 · B 주기 · C 기준 · D 사용 여부 · E 알림 시작
+
+/* ---------- 메뉴와 자동 ID ---------- */
+
+/** 단순 트리거: 파일을 열 때 메뉴를 만들고, ID 없는 새 업무에 ID를 붙인다. */
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('AIBoot 정기 업무')
+    .addItem('선택한 업무 회차 처리…', 'showMarkDialog')
+    .addItem('새 업무에 ID 지정', 'assignIdsFromMenu')
+    .addSeparator()
+    .addItem('처음 설정(처리이력 탭 만들기)', 'setupFromMenu')
+    .addToUi();
+  try { assignNewIds_(); } catch (e) { console.warn('onOpen ID 지정 건너뜀: ' + e.message); }
+}
+
+/** 단순 트리거: `업무` 탭 A~E열을 고치면 ID 없는 행에 ID를 붙인다. 다른 탭 편집은 무시한다. */
+function onEdit(e) {
+  var range = e && e.range;
+  if (!range || range.getSheet().getName() !== Recurring.TASK_TAB) return;
+  if (range.getColumn() > AIBOOT_COLS || range.getLastRow() < 2 || range.getRow() > AIBOOT_LAST_ROW) return;
+  try { assignNewIds_(); } catch (err) { console.warn('onEdit ID 지정 건너뜀: ' + err.message); }
+}
+
+function assignIdsFromMenu() {
+  var r = assignNewIds_();
+  SpreadsheetApp.getUi().alert(r.assigned.length ? 'ID 지정: ' + r.assigned.map(function (a) { return a.row + '행'; }).join(', ') : '새로 ID를 붙일 업무가 없습니다.');
+}
+
+function setupFromMenu() {
+  var r = setupHistoryTab_();
+  SpreadsheetApp.getUi().alert(r.created ? '처리이력 탭을 만들었습니다(숨김).' : '처리이력 탭이 이미 있습니다.');
+}
+
+/* ---------- 읽기: Node readRecurringSource와 같은 모양으로 만든다 ---------- */
+
+function spreadsheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (ss.getName() !== Recurring.FILE_TITLE) throw new Error('정기 업무 원본 파일이 아님: ' + Recurring.FILE_TITLE + '에서만 동작');
+  return ss;
+}
+
+/** 날짜 셀은 표시값(11-16)이 아니라 실제 날짜로 읽는다 — recurring.mjs cellText와 같은 규칙. */
+function cellText_(value, display) {
+  if (Object.prototype.toString.call(value) === '[object Date]') return Utilities.formatDate(value, AIBOOT_TZ, 'yyyy-MM-dd');
+  return display == null ? '' : String(display);
+}
+
+function readSource_(ss) {
+  var sheet = ss.getSheetByName(Recurring.TASK_TAB);
+  if (!sheet) throw new Error('업무 탭 없음');
+  var range = sheet.getRange(2, 1, AIBOOT_LAST_ROW - 1, AIBOOT_COLS);
+  var values = range.getValues(), display = range.getDisplayValues();
+  var last = values.length;
+  while (last > 0 && display[last - 1].every(function (c) { return String(c).trim() === ''; })) last--;
+  var rows = [];
+  for (var i = 0; i < last; i++) rows.push([0, 1, 2, 3, 4].map(function (c) { return cellText_(values[i][c], display[i][c]); }));
+  // 업무가 있는지는 A~D로만 본다(recurring.mjs parseTasks와 같다). E열만 남은 행은 업무가 아니다.
+  var blankTask = function (r) { return r.slice(0, 4).every(function (c) { return String(c).trim() === ''; }); };
+  var rowIds = [], idMeta = [];
+  sheet.createDeveloperMetadataFinder().withKey(Recurring.ID_KEY).find().forEach(function (md) {
+    var loc = md.getLocation();
+    if (String(loc.getLocationType()) !== 'ROW') return;
+    var row = loc.getRow().getRow();
+    idMeta.push({ row: row, md: md, empty: row >= 2 && (row - 2 >= last || blankTask(display[row - 2])) });
+    if (row >= 2 && row <= AIBOOT_LAST_ROW && rowIds[row - 2] == null) rowIds[row - 2] = md.getValue();
+  });
+  for (var j = 0; j < last; j++) if (rowIds[j] === undefined) rowIds[j] = null;
+  var source = { tasks: Recurring.parseTasks(rows, rowIds.slice(0, last)), history: new Map(), historyState: '미생성', historyHeader: null, taskSheetId: sheet.getSheetId(), sheet: sheet, historySheet: null, idMeta: idMeta };
+  var hist = ss.getSheetByName(Recurring.HISTORY_TAB);
+  if (hist) {
+    source.historySheet = hist;
+    var n = Math.max(hist.getLastRow(), 1);
+    var hv = hist.getRange(1, 1, n, Recurring.HISTORY_HEADER.length).getDisplayValues();
+    source.historyHeader = hv[0];
+    var headerOk = Recurring.HISTORY_HEADER.every(function (h, k) { return String(hv[0][k] || '').trim() === h; });
+    if (headerOk) { source.history = Recurring.parseHistory(hv); source.historyState = '연결'; }
+    else source.historyState = '조회 실패'; // 열이 바뀐 표에 쓰면 다른 열을 덮어쓴다
+  }
+  return source;
+}
+
+/** 공휴일 피드(정기 보고와 같은 주소)를 6시간 캐시한다. 못 받으면 날짜를 만들지 않는 달력이 된다. */
+function calendar_() {
+  var cache = CacheService.getScriptCache(), holidays = null;
+  var hit = cache.get('aiboot.holidays');
+  if (hit) holidays = JSON.parse(hit);
+  else {
+    try {
+      var res = UrlFetchApp.fetch(Recurring.HOLIDAY_ICS, { muteHttpExceptions: true });
+      if (res.getResponseCode() !== 200) throw new Error('HTTP ' + res.getResponseCode());
+      holidays = Recurring.parseHolidayFeed(res.getContentText());
+      if (!holidays.days.length) throw new Error('0 holidays');
+      cache.put('aiboot.holidays', JSON.stringify(holidays), 21600);
+    } catch (e) { console.warn('공휴일 피드 실패: ' + e.message); holidays = null; }
+  }
+  var props = PropertiesService.getScriptProperties();
+  var list = function (k) { return String(props.getProperty(k) || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean); };
+  return Recurring.makeCalendar(holidays, { holidaysExtra: list('HOLIDAYS_EXTRA'), workdaysExtra: list('WORKDAYS_EXTRA') });
+}
+
+function today_() { return Utilities.formatDate(new Date(), AIBOOT_TZ, 'yyyy-MM-dd'); }
+function stamp_() { return Utilities.formatDate(new Date(), AIBOOT_TZ, 'yyyy-MM-dd HH:mm:ss'); }
+function newId_() { return 'T' + Utilities.getUuid().replace(/-/g, '').slice(0, 8); }
+
+/** 문서 잠금: 두 사람이 동시에 처리하거나 onEdit가 겹쳐도 같은 회차 행·같은 ID가 두 번 생기지 않게 한다. */
+function withLock_(fn) {
+  var lock = LockService.getDocumentLock();
+  if (!lock.tryLock(10000)) throw new Error('다른 처리가 진행 중 — 잠시 후 다시 시도');
+  try { return fn(); } finally { lock.releaseLock(); }
+}
+
+/* ---------- 쓰기 ---------- */
+
+/** 쓰기 직전 다시 읽기용: 한 행 A~D 표시값(공백 정리). */
+function rowText_(sheet, row) {
+  return sheet.getRange(row, 1, 1, 4).getDisplayValues()[0].map(function (c) { return String(c).replace(/\s+/g, ' ').trim(); });
+}
+function rowHasId_(sheet, row) {
+  return sheet.createDeveloperMetadataFinder().withKey(Recurring.ID_KEY).find().some(function (md) {
+    var loc = md.getLocation(); return String(loc.getLocationType()) === 'ROW' && loc.getRow().getRow() === row;
+  });
+}
+
+/**
+ * 이력 한 행 쓰기. 쓰기 직전에 그 행이 아직 같은 회차(갱신) 또는 빈 행(추가)인지 다시 확인한다 —
+ * 잠금은 스크립트끼리만 막고 사용자의 행 삭제·삽입은 막지 못하기 때문이다.
+ * 서식 있는 텍스트로 쓰므로 근거가 `=`로 시작해도 수식이 되지 않고, `2026-11`도 날짜로 바뀌지 않는다.
+ */
+function writeHistoryRow_(hist, row, values, expect) {
+  var range = hist.getRange(row, 1, 1, values.length);
+  var now = range.getDisplayValues()[0];
+  var ok = expect ? now[0] === expect[0] && now[1] === expect[1] : now.every(function (c) { return String(c) === ''; });
+  if (!ok) throw new Error('처리이력 탭이 그 사이 바뀌었음 — 대화상자를 다시 열기');
+  range.setNumberFormat('@').setRichTextValues([values.map(function (v) { return SpreadsheetApp.newRichTextValue().setText(String(v)).build(); })]);
+}
+
+/** ID 없는 업무 행에 ID를 붙인다. 이미 있는 ID는 바꾸지 않고, 이력 탭은 만들지 않는다(setup에서만). */
+function assignNewIds_() {
+  return withLock_(function () {
+    var ss = spreadsheet_(), source = readSource_(ss);
+    if (source.historyState === '조회 실패') throw new Error('처리이력 탭 머리글이 고정 열과 다름 — ID 지정 중단');
+    // A~D를 모두 비운 행의 ID는 뗀다. 그 행에 새 업무를 쓰면 예전 업무의 ID·완료 기록을 물려받아 보고에서 빠지기 때문이다.
+    // (이름·규칙을 고치는 것은 같은 업무로 보고 ID를 유지한다.) 잘못 비웠다 다시 써도 새 ID가 되어 미처리로 보일 뿐 누락은 없다.
+    var cleared = [];
+    source.idMeta.filter(function (m) { return m.empty; }).forEach(function (m) {
+      if (rowText_(source.sheet, m.row).every(function (c) { return c === ''; })) { m.md.remove(); cleared.push(m.row); }
+    });
+    if (cleared.length) source = readSource_(ss);
+    var plan = RecurringStatus.planInit(source.historyState === '미생성' ? Object.assign({}, source, { historyState: '연결', historyHeader: Recurring.HISTORY_HEADER }) : source, newId_, 0);
+    var done = [];
+    plan.assign.forEach(function (a) {
+      // 읽은 뒤 사용자가 행을 넣거나 지웠으면 그 자리는 다른 행이다. 같은 업무명이고 아직 ID가 없을 때만 붙인다.
+      var task = source.tasks.filter(function (t) { return t.row === a.row; })[0];
+      if (rowText_(source.sheet, a.row)[0] !== task.title || rowHasId_(source.sheet, a.row)) return;
+      source.sheet.getRange(a.row + ':' + a.row).addDeveloperMetadata(Recurring.ID_KEY, a.id, SpreadsheetApp.DeveloperMetadataVisibility.DOCUMENT);
+      done.push(a);
+    });
+    if (done.length || cleared.length) SpreadsheetApp.flush();
+    return { assigned: done, cleared: cleared };
+  });
+}
+
+function setupHistoryTab_() {
+  return withLock_(function () {
+    var ss = spreadsheet_();
+    if (ss.getSheetByName(Recurring.HISTORY_TAB)) return { created: false };
+    var hist = ss.insertSheet(Recurring.HISTORY_TAB);
+    var head = hist.getRange(1, 1, 1, Recurring.HISTORY_HEADER.length);
+    head.setNumberFormat('@').setValues([Recurring.HISTORY_HEADER]);
+    hist.hideSheet();
+    return { created: true };
+  });
+}
+
+/* ---------- 회차 처리 대화상자 ---------- */
+
+function showMarkDialog() {
+  var cell = SpreadsheetApp.getActiveRange();
+  if (!cell || cell.getSheet().getName() !== Recurring.TASK_TAB || cell.getRow() < 2) {
+    SpreadsheetApp.getUi().alert('`업무` 탭에서 처리할 업무 행을 먼저 선택하세요.');
+    return;
+  }
+  try { assignNewIds_(); } catch (e) { console.warn(e.message); }
+  var t = HtmlService.createTemplateFromFile('Dialog');
+  t.row = cell.getRow();
+  SpreadsheetApp.getUi().showModalDialog(t.evaluate().setWidth(460).setHeight(420), '정기 업무 회차 처리');
+}
+
+/** 대화상자용: 선택한 행 업무의 계산 가능한 회차와 현재 상태. 기록하지 않는다. */
+function listOccurrences(row) {
+  var source = readSource_(spreadsheet_());
+  var task = source.tasks.filter(function (t) { return t.row === row; })[0];
+  if (!task) return { error: row + '행에 업무가 없음' };
+  if (!task.id) return { error: '업무ID가 아직 없음 — 메뉴의 "새 업무에 ID 지정"을 먼저 실행' };
+  if (task.rule.error) return { error: '규칙 확인 필요: ' + task.rule.error };
+  if (source.historyState !== '연결') return { error: '처리이력 탭 상태가 ' + source.historyState + ' — "처음 설정"을 먼저 실행' };
+  var occ = Recurring.occurrences(task.rule, calendar_(), today_(), { before: 400 }).filter(function (o) { return o.due; });
+  return {
+    row: row, id: task.id, title: task.title,
+    occurrences: occ.map(function (o) { var s = Recurring.occurrenceState(task, o, source.history); return { key: o.key, due: o.due, d: o.d, state: s.state, why: s.why }; })
+  };
+}
+
+/**
+ * 대화상자용: 회차 하나를 완료·보류·미처리(다시 열기)로 기록한다.
+ * 잠근 뒤 시트를 다시 읽고, 그 사이 행이 바뀌었으면(행 이동·삭제·ID 변경) 쓰지 않는다.
+ * 검사·같은 회차 갱신 규칙은 recurring-status.mjs planMark 원문 그대로다.
+ */
+function markOccurrence(req) {
+  var cal = calendar_(), today = today_(); // 외부 조회는 잠금 전에 끝내 읽기와 쓰기 사이를 짧게 한다
+  return withLock_(function () {
+    var source = readSource_(spreadsheet_());
+    var task = source.tasks.filter(function (t) { return t.row === req.row; })[0];
+    if (!task || task.id !== req.id) throw new Error('선택한 행의 업무가 바뀌었음 — 대화상자를 다시 열기');
+    // 대화상자에서 본 기준일과 지금 계산한 기준일이 다르면(그 사이 C열을 고친 경우) 기록하지 않는다.
+    var occ = task.rule.error ? null : Recurring.occurrences(task.rule, cal, today, { before: 400 }).filter(function (o) { return o.key === req.key && o.due; })[0];
+    if (occ && req.due && occ.due !== req.due) throw new Error('회차 기준일이 ' + req.due + '에서 ' + occ.due + '로 바뀌었음 — 대화상자를 다시 열기');
+    if (!req.due) throw new Error('기준일 없는 요청 — 대화상자를 다시 열기');
+    var plan = RecurringStatus.planMark(source, { id: req.id, key: req.key, status: req.status, note: req.note }, cal, today, stamp_());
+    if (plan.op === 'none') return { op: 'none', message: '변경 없음: ' + plan.reason };
+    var hist = source.historySheet, row = plan.row;
+    if (plan.op === 'append') {
+      row = Math.max(hist.getLastRow(), 1) + 1;
+      if (row > hist.getMaxRows()) hist.insertRowsAfter(hist.getMaxRows(), 1);
+    }
+    writeHistoryRow_(hist, row, plan.values, plan.op === 'update' ? [req.id, req.key] : null);
+    SpreadsheetApp.flush();
+    return { op: plan.op, row: row, message: task.title + ' ' + req.key + ' → ' + req.status };
+  });
+}
