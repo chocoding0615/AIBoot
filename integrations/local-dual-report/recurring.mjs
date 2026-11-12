@@ -273,6 +273,7 @@ export function reportWindow(task, occ) {
 /**
  * 보고에 넘길 정기 업무 줄. 완료·보류·중지와 표시 범위(reportWindow) 밖 회차가 빠진다.
  * E열이 비거나 잘못된 업무는 회차를 숨기는 대신 `업무명: 알림 시작(E열) 미설정 — 입력 필요` 한 줄로 남겨 조용히 사라지지 않게 한다.
+ * 이 줄에는 다음 회차 날짜를 넣지 않는다. 날짜를 주면 AI가 표시 범위 밖 회차 줄로 풀어 쓴다(2026-11-12 dry-run). 날짜는 연결현황에서 본다.
  */
 export function recurringLines(source, cal, today) {
   const lines = [];
@@ -280,19 +281,19 @@ export function recurringLines(source, cal, today) {
     if (!t.use.active) continue;
     const lead = t.lead || parseLead('');
     const warn = t.use.warn ? ` / ${t.use.warn}` : '';
-    let next = null, pending = false;
+    let pending = false;
     for (const o of occurrences(t.rule, cal, today)) {
       if (o.unknown) { lines.push(`${t.title}: 날짜 계산 불가(${o.unknown}) — 규칙 확인 필요${lead.error ? ` / 알림 시작(E열) ${lead.error}` : ''}${warn}`); continue; }
       const s = occurrenceState(t, o, source.history);
       if (s.state === '완료' || s.state === '보류') continue;
       pending = true;
       const w = reportWindow(t, o);
-      if (!w.show) { if (w.noLead && !next) next = o; continue; }
+      if (!w.show) continue;
       const tail = s.state === '확인 필요' ? `처리이력 확인 필요(${s.why})` : '완료 여부 확인 필요';
       lines.push(`${t.title}: ${o.due} (${o.d < 0 ? 'D+' + -o.d : 'D-' + o.d}) — ${tail}${warn}`);
     }
     // 완료·보류된 단발 업무는 더 알릴 회차가 없으므로 E열 안내도 하지 않는다. 반복 업무는 회차가 창 밖이어도 안내한다.
-    if (lead.error && !t.rule.error && (t.rule.kind !== 'once' || pending)) lines.push(`${t.title}: 알림 시작(E열) ${lead.error} — 입력 필요${next ? `, 다음 회차 ${next.due} (D-${next.d})` : ''}${warn}`);
+    if (lead.error && !t.rule.error && (t.rule.kind !== 'once' || pending)) lines.push(`${t.title}: 알림 시작(E열) ${lead.error} — 입력 필요${warn}`);
   }
   return lines;
 }
