@@ -126,6 +126,9 @@ const rules = () => RULE_FILES.map(f => `### ${f}\n` + fs.readFileSync(path.join
 const FIELDS = ['[고정비]', '[계약서]', '[라이센스]', '[복지]', '[정기 업무]', '[기타 업무]'];
 const REMAINING_FIELDS = FIELDS.slice(0, 4); // always shown under 오늘 남은 일
 const IMMINENT_DAYS = 7;
+// 업체가 먼저 납부하고 회사에 청구하는 고정비: 예정일까지는 청구서 수신·지출결의 확인, 예정일 다음 날부터 일일 보고 제외.
+const VENDOR_BILLED = new Set(['양주 전기료']);
+const billedNote = '업체 선납 후 청구 — 청구서 수신·지출결의 작성 여부 확인 필요(청구서가 아직 없다는 이유로 작성 누락·납부 지연으로 쓰지 말 것)';
 const SEP = '--------------------';
 const D_BUCKETS = [['D-7', 0, 7], ['D-30', 8, 30], ['D-60', 31, 60]];
 const welfareTab = date => `복지포인트 관리(${date.slice(0, 4)})`; // one tab per year
@@ -181,6 +184,31 @@ function fixedMark(jp, s, due) {
   const rows = item < 0 ? [] : block.filter(r => t(r[item]) === s.vendor.replace(/\s+/g, ''));
   if (col < 0 || rows.length !== 1) return `${label} 확인 불가 — ${need}`;
   return rows[0][col]?.yellow ? `${label} 연노랑 — 지출결의 작성·제출 표시 확인(결재 승인·납부 완료 아님)` : `${label} 연노랑 없음 — ${need}`;
+}
+
+/** Fixed-cost fact lines: imminent window (today..today+7) and this month's rule-based schedule. */
+function fixedFacts(date, jp) {
+  const sched = fixedSchedule(date);
+  // Imminent window (today..today+7): only these dated fixed-cost items may appear under 오늘 남은 일.
+  const windowDates = Array.from({ length: IMMINENT_DAYS + 1 }, (_, i) => addDay(date, i));
+  const imminent = [];
+  for (const d of windowDates) {
+    const [y, m, dd] = d.split('-').map(Number);
+    for (const s of fixedSchedule(d)) {
+      if (s.day === dd && !imminent.some(x => x.vendor === s.vendor)) imminent.push({ ...s, date: d });
+    }
+  }
+  const imminentDays = windowDates.map(d => Number(d.slice(8)));
+  const undated = sched.filter(s => !s.day).map(s => s.vendor);
+  const lines = [
+    `[고정비 임박 예정 — ${date.slice(5)}~${windowDates[IMMINENT_DAYS].slice(5)}] 오늘 남은 일 [고정비]에는 이 목록 중 실제 미처리 항목만 넣는다`,
+    ...(imminent.length ? imminent.map(s => `- ${s.vendor}: ${s.date.slice(5).replace('-', '/')} (${s.basis}) — ${fixedMark(jp, s, s.date)}${VENDOR_BILLED.has(s.vendor) ? ' / ' + billedNote : ''}`) : ['- 없음']),
+    '',
+    `[고정비 이번 달 규칙상 예정일 — 참고용, 임박이 아니면 오늘 남은 일에 넣지 말 것] (FIXED-EXPENSES-V1 표에서 계산, 실제 고지서·납부와 다를 수 있음)`,
+    ...sched.filter(s => s.day).map(s => `- ${s.vendor}: ${date.slice(5, 7)}/${String(s.day).padStart(2, '0')} (${s.basis})${VENDOR_BILLED.has(s.vendor) && Number(date.slice(8)) > s.day ? ' — 예정일 경과: 일일 보고 제외(청구서 수신이 확인되기 전에는 어느 대분류에도 쓰지 말 것, 수신을 추정하지 말 것)' : ''}`),
+    `- 예정일 미확정(${undated.join('·') || '없음'}): 시트나 스페이스 메시지에 구체 근거가 없으면 보고하지 말 것`,
+  ];
+  return { sched, imminent, imminentDays, lines };
 }
 
 /* ---------- read-only snapshot ---------- */
@@ -432,17 +460,7 @@ async function facts(date, c, snap) {
   const nextHeading = next === addDay(date, 1) ? `내일 업무 (${mmdd})`
     : dow === 5 && next === addDay(date, 3) ? `다음주 월요일 업무 (${mmdd})`
     : `다음 근무일 업무 (${mmdd})`;
-  const sched = fixedSchedule(date);
-  // Imminent window (today..today+7): only these dated fixed-cost items may appear under 오늘 남은 일.
-  const windowDates = Array.from({ length: IMMINENT_DAYS + 1 }, (_, i) => addDay(date, i));
-  const imminent = [];
-  for (const d of windowDates) {
-    const [y, m, dd] = d.split('-').map(Number);
-    for (const s of fixedSchedule(d)) {
-      if (s.day === dd && !imminent.some(x => x.vendor === s.vendor)) imminent.push({ ...s, date: d });
-    }
-  }
-  const imminentDays = windowDates.map(d => Number(d.slice(8)));
+  const { sched, imminentDays, lines: fixedLines } = fixedFacts(date, snap.jp);
   const undated = sched.filter(s => !s.day).map(s => s.vendor);
   const byBucket = list => D_BUCKETS.map(([b]) => `${b}: ` + (list.filter(x => x.bucket === b).map(x => `${x.name}${x.what ? '(' + x.what + ')' : ''} 종료 ${x.end} D-${x.d}${x.autoRenew ? ' 자동연장' : ''}`).join(' / ') || '없음')).join('\n');
   const text = [
@@ -450,12 +468,7 @@ async function facts(date, c, snap) {
     `다음 근무일: ${next} → 마지막 대분류 제목은 정확히 "${nextHeading}"`,
     `휴일 결제일 이동 규칙: 미확정 — 예정일을 옮기지 말 것`,
     '',
-    `[고정비 임박 예정 — ${date.slice(5)}~${windowDates[IMMINENT_DAYS].slice(5)}] 오늘 남은 일 [고정비]에는 이 목록 중 실제 미처리 항목만 넣는다`,
-    ...(imminent.length ? imminent.map(s => `- ${s.vendor}: ${s.date.slice(5).replace('-', '/')} (${s.basis}) — ${fixedMark(snap.jp, s, s.date)}`) : ['- 없음']),
-    '',
-    `[고정비 이번 달 규칙상 예정일 — 참고용, 임박이 아니면 오늘 남은 일에 넣지 말 것] (FIXED-EXPENSES-V1 표에서 계산, 실제 고지서·납부와 다를 수 있음)`,
-    ...sched.filter(s => s.day).map(s => `- ${s.vendor}: ${date.slice(5, 7)}/${String(s.day).padStart(2, '0')} (${s.basis})`),
-    `- 예정일 미확정(${undated.join('·') || '없음'}): 시트나 스페이스 메시지에 구체 근거가 없으면 보고하지 말 것`,
+    ...fixedLines,
     '',
     `[계약서 — 계약 종료일 기준 D-구간, 계약종료 처리된 건 제외]`, byBucket(snap.contracts),
     '',
