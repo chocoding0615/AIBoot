@@ -121,9 +121,9 @@ test('bounded prompt labels old context and incomplete fresh evidence, keeps cur
 test('Antigravity adapter uses isolated cwd, no shell, plan flags and no repeated calls', async () => {
   let calls = 0, cwd;
   const launch = (file, args, options) => {
-    calls++; cwd = options.cwd; assert.equal(options.shell, false); assert.ok(args.includes('plan')); assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { useG1Credits: false });
+    calls++; cwd = options.cwd; assert.equal(options.shell, false); assert.ok(args.includes('plan')); assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { useG1Credits: false }); assert.equal(args[args.indexOf('--output-format') + 1], 'json'); assert.deepEqual(JSON.parse(args[args.indexOf('--json-schema') + 1]).required, ['factIds', 'advice']);
     const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
-    queueMicrotask(() => { child.stdout.write('{"factIds":[],"advice":""}'); child.emit('close', 0); });
+    queueMicrotask(() => { child.stdout.write(JSON.stringify({ status: 'SUCCESS', structured_output: { factIds: [], advice: '' } })); child.emit('close', 0); });
     return child;
   };
   assert.match(await generateAntigravity('fixture', () => false, {launch, executable: 'fake'}), /factIds/);
@@ -160,4 +160,41 @@ test('active generation is interrupted when the report guard becomes active', as
   };
   await assert.rejects(generateAntigravity('fixture', () => ++checks > 1, {launch, executable: 'fake'}));
   assert.equal(killed, true);
+});
+
+
+test('Antigravity adapter ignores token-truncated prose and accepts only structured terminal result', async () => {
+  const value = { factIds: ['contracts:verified'], advice: '' };
+  let calls = 0;
+  const launch = () => {
+    calls++;
+    const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
+    queueMicrotask(() => {
+      const output = JSON.stringify({ status: 'SUCCESS', response: 'Non-JSON partial output before internal continuation', structured_output: value });
+      child.stdout.write(output.slice(0, 25)); child.stdout.write(output.slice(25)); child.emit('close', 0);
+    });
+    return child;
+  };
+  assert.deepEqual(JSON.parse(await generateAntigravity('fixture', () => false, { launch })), value);
+  assert.equal(calls, 1);
+});
+
+test('Antigravity adapter rejects missing schema output, non-success status and malformed schema without fallback', async () => {
+  const good = { factIds: [], advice: '' };
+  const cases = [
+    JSON.stringify({ status: 'SUCCESS', response: JSON.stringify(good) }),
+    JSON.stringify({ status: 'ERROR', structured_output: good }),
+    JSON.stringify({ status: 'SUCCESS', structured_output: { factIds: [3], advice: '' } }),
+    JSON.stringify({ status: 'SUCCESS', structured_output: { factIds: [], advice: 'unsupported advice' } }),
+    JSON.stringify({ status: 'SUCCESS', structured_output: { ...good, extra: true } }),
+    JSON.stringify(good), 'partial prose' + JSON.stringify(good)
+  ];
+  for (const output of cases) {
+    const launch = () => {
+      const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
+      queueMicrotask(() => { child.stdout.write(output); child.emit('close', 0); });
+      return child;
+    };
+    await assert.rejects(generateAntigravity('fixture', () => false, { launch }));
+  }
 });

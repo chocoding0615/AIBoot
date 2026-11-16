@@ -5,12 +5,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { collect, answerPending, deliverPreview, validateConfig, proposals } from './core.mjs';
+import { collect, answerPending, deliverPreview, validateConfig, proposals, ADVICE } from './core.mjs';
 import { openStore } from './store.mjs';
 import { clients, readSources, fixedRules, recentReports } from './sources.mjs';
 
 export function generateAntigravity(text, blocked, { executable = path.join(os.homedir(), 'AppData/Local/agy/bin/agy.exe'), launch = spawn } = {}) {
   if (text.length > 30000 || blocked()) return Promise.reject(new Error('프롬프트 한도 또는 정기 보고 보호'));
+  const schema = { type: 'object', properties: { factIds: { type: 'array', maxItems: 12, items: { type: 'string' } }, advice: { type: 'string', enum: ADVICE } }, required: ['factIds', 'advice'], additionalProperties: false };
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'aiboot-dialog-'));
   return new Promise((resolve, reject) => {
     let child, output = '', error = '', settled = false, timer;
@@ -19,7 +20,7 @@ export function generateAntigravity(text, blocked, { executable = path.join(os.h
       try { fs.rmSync(temporary, { recursive: true, force: true }); } catch {}
       failure ? reject(new Error('AI 실행/한도/보고 보호 중단')) : resolve(result);
     };
-    try { child = launch(executable, ['--settings', JSON.stringify({ useG1Credits: false }), '-p', text, '--mode', 'plan', '--print-timeout', '540s'], { cwd: temporary, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] }); }
+    try { child = launch(executable, ['--settings', JSON.stringify({ useG1Credits: false }), '-p', text, '--output-format', 'json', '--json-schema', JSON.stringify(schema), '--mode', 'plan', '--print-timeout', '540s'], { cwd: temporary, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] }); }
     catch { finish(true); return; }
     const deadline = Date.now() + 10 * 60000;
     timer = setInterval(() => {
@@ -30,7 +31,18 @@ export function generateAntigravity(text, blocked, { executable = path.join(os.h
     child.stdout.on('data', chunk => { output += chunk; if (output.length > 64000) { child.kill(); finish(true); } });
     child.stderr.on('data', chunk => { error = (error + chunk).slice(-8000); });
     child.on('error', () => finish(true));
-    child.on('close', code => finish(code !== 0 || /quota|rate.?limit|resource.?exhausted|429/i.test(error) || !output.trim(), output.trim()));
+    child.on('close', code => {
+      if (code !== 0 || /quota|rate.?limit|resource.?exhausted|429/i.test(error) || !output.trim()) { finish(true); return; }
+      try {
+        const envelope = JSON.parse(output), value = envelope.structured_output;
+        // Never parse free-text response or salvage JSON from partial/token-truncated prose.
+        if (envelope.status !== 'SUCCESS' || !value || Array.isArray(value) ||
+            Object.keys(value).some(key => !['factIds', 'advice'].includes(key)) ||
+            !Array.isArray(value.factIds) || value.factIds.length > 12 || value.factIds.some(id => typeof id !== 'string') ||
+            !ADVICE.includes(value.advice)) throw new Error('Invalid structured answer');
+        finish(false, JSON.stringify(value));
+      } catch { finish(true); }
+    });
   });
 }
 
