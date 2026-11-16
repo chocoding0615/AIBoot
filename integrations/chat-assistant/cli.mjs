@@ -5,43 +5,88 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { collect, answerPending, deliverPreview, validateConfig, proposals, ADVICE } from './core.mjs';
+import { collect, answerPending, deliverPreview, validateConfig, proposals, validateAnswer, aiFailure } from './core.mjs';
 import { openStore } from './store.mjs';
 import { clients, readSources, fixedRules, recentReports } from './sources.mjs';
 
 export function generateAntigravity(text, blocked, { executable = path.join(os.homedir(), 'AppData/Local/agy/bin/agy.exe'), launch = spawn } = {}) {
-  if (text.length > 30000 || blocked()) return Promise.reject(new Error('프롬프트 한도 또는 정기 보고 보호'));
-  const schema = { type: 'object', properties: { factIds: { type: 'array', maxItems: 12, items: { type: 'string' } }, advice: { type: 'string', enum: ADVICE } }, required: ['factIds', 'advice'], additionalProperties: false };
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'aiboot-dialog-'));
+  try {
+    if (typeof text !== 'string' || text.length > 30000) return Promise.reject(aiFailure('AI_INPUT_LIMIT'));
+    if (blocked()) return Promise.reject(aiFailure('AI_REPORT_PROTECTION'));
+  } catch { return Promise.reject(aiFailure('AI_REPORT_PROTECTION')); }
+  // Conservative OpenAPI-compatible wire types. Empty advice is valid STRING;
+  // the existing ADVICE allowlist, array cap and closed object are enforced locally.
+  const schema = { type: 'object', properties: { factIds: { type: 'array', maxItems: 12, items: { type: 'string' } }, advice: { type: 'string' } }, required: ['factIds', 'advice'] };
+  let temporary;
+  try { temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'aiboot-dialog-')); }
+  catch { return Promise.reject(aiFailure('AI_SPAWN_ERROR')); }
   return new Promise((resolve, reject) => {
-    let child, output = '', error = '', settled = false, timer;
-    const finish = (failure, result) => {
-      if (settled) return; settled = true; clearInterval(timer);
+    let child, output = '', stderr = '', outputBytes = 0, settled = false, timer;
+    const details = {};
+    const finish = (code, value) => {
+      if (settled) return;
+      settled = true; clearInterval(timer);
       try { fs.rmSync(temporary, { recursive: true, force: true }); } catch {}
-      failure ? reject(new Error('AI 실행/한도/보고 보호 중단')) : resolve(result);
+      code ? reject(aiFailure(code, details)) : resolve(JSON.stringify(value));
     };
-    try { child = launch(executable, ['--settings', JSON.stringify({ useG1Credits: false }), '-p', text, '--output-format', 'json', '--json-schema', JSON.stringify(schema), '--mode', 'plan', '--print-timeout', '540s'], { cwd: temporary, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] }); }
-    catch { finish(true); return; }
+    const stop = code => {
+      try { child?.kill(); } catch {}
+      finish(code);
+    };
+    // Classify only terminal errors, never benign stderr notices such as quota refresh.
+    const classify = text => {
+      if (/INVALID_ARGUMENT|json.?schema|schema.{0,40}(invalid|unsupported)|enum.{0,80}(empty|invalid)|parameters\.properties/i.test(text)) return 'AI_REQUEST_SCHEMA';
+      if (/RESOURCE_EXHAUSTED|\b429\b|quota.{0,40}(exceeded|exhausted)|rate.?limit.{0,40}(exceeded|exhausted)|out of (quota|credits)/i.test(text)) return 'AI_SUBSCRIPTION_LIMIT';
+      if (/output token limit|maximum output|response.{0,30}cut off/i.test(text)) return 'AI_OUTPUT_TOKEN_LIMIT';
+      if (/UNAUTHENTICATED|PERMISSION_DENIED|authentication required|unauthorized|\b(401|403)\b/i.test(text)) return 'AI_AUTH_ERROR';
+      if (/timed? ?out|deadline exceeded|DEADLINE_EXCEEDED/i.test(text)) return 'AI_EXECUTION_TIMEOUT';
+      return 'AI_EXIT_ERROR';
+    };
+    const args = ['--settings', JSON.stringify({ useG1Credits: false }), '-p', text, '--output-format', 'json', '--json-schema', JSON.stringify(schema), '--mode', 'plan', '--print-timeout', '540s'];
+    // Count UTF-16 command-line units after Windows quoting, including JSON quotes.
+    const quotedLength = value => {
+      let length = 2, slashes = 0;
+      for (let i = 0; i < value.length; i++) {
+        if (value[i] === '\\') { slashes++; continue; }
+        length += value[i] === '"' ? slashes * 2 + 2 : slashes + 1; slashes = 0;
+      }
+      return length + slashes * 2;
+    };
+    if (process.platform === 'win32' && [executable, ...args].reduce((n, value) => n + quotedLength(value) + 1, 0) >= 32767) { finish('AI_INPUT_LIMIT'); return; }
+    try {
+      child = launch(executable, args, { cwd: temporary, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+      child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+    } catch { stop('AI_SPAWN_ERROR'); return; }
     const deadline = Date.now() + 10 * 60000;
     timer = setInterval(() => {
-      let stop = true;
-      try { stop = blocked() || Date.now() >= deadline; } catch {}
-      if (stop) { child.kill(); finish(true); }
+      if (settled) return;
+      try { if (blocked()) { stop('AI_REPORT_PROTECTION'); return; } }
+      catch { stop('AI_REPORT_PROTECTION'); return; }
+      if (Date.now() >= deadline) stop('AI_EXECUTION_TIMEOUT');
     }, 1000);
-    child.stdout.on('data', chunk => { output += chunk; if (output.length > 64000) { child.kill(); finish(true); } });
-    child.stderr.on('data', chunk => { error = (error + chunk).slice(-8000); });
-    child.on('error', () => finish(true));
-    child.on('close', code => {
-      if (code !== 0 || /quota|rate.?limit|resource.?exhausted|429/i.test(error) || !output.trim()) { finish(true); return; }
-      try {
-        const envelope = JSON.parse(output), value = envelope.structured_output;
-        // Never parse free-text response or salvage JSON from partial/token-truncated prose.
-        if (envelope.status !== 'SUCCESS' || !value || Array.isArray(value) ||
-            Object.keys(value).some(key => !['factIds', 'advice'].includes(key)) ||
-            !Array.isArray(value.factIds) || value.factIds.length > 12 || value.factIds.some(id => typeof id !== 'string') ||
-            !ADVICE.includes(value.advice)) throw new Error('Invalid structured answer');
-        finish(false, JSON.stringify(value));
-      } catch { finish(true); }
+    child.stdout.on('data', chunk => {
+      if (settled) return;
+      outputBytes += Buffer.byteLength(chunk, 'utf8');
+      if (outputBytes > 64000) { stop('AI_OUTPUT_LIMIT'); return; }
+      output += chunk;
+    });
+    child.stderr.on('data', chunk => { if (!settled) stderr = (stderr + chunk).slice(-8000); });
+    child.stdout.on('error', () => stop('AI_EXIT_ERROR'));
+    child.stderr.on('error', () => stop('AI_EXIT_ERROR'));
+    child.on('error', () => stop('AI_SPAWN_ERROR'));
+    child.on('close', (exitCode, signal) => {
+      if (settled) return;
+      if (Number.isInteger(exitCode)) details.exitCode = exitCode;
+      if (typeof signal === 'string' && /^SIG[A-Z0-9]+$/.test(signal)) details.signal = signal;
+      let envelope;
+      try { envelope = JSON.parse(output.replace(/^\uFEFF/, '')); }
+      catch { finish(exitCode === 0 ? 'AI_OUTPUT_JSON' : classify(stderr)); return; }
+      if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope) || typeof envelope.status !== 'string') { finish('AI_OUTPUT_SCHEMA'); return; }
+      if (exitCode !== 0 || envelope.status !== 'SUCCESS') {
+        finish(classify(typeof envelope.error === 'string' && envelope.error ? envelope.error : stderr)); return;
+      }
+      try { finish(null, validateAnswer(envelope.structured_output)); }
+      catch { finish('AI_OUTPUT_SCHEMA'); }
     });
   });
 }

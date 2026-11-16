@@ -43,3 +43,15 @@ node integrations/chat-assistant/cli.mjs --once --propose
 ```
 
 실행 명령은 운영 PC 승인 후 사용할 안내다. 현재 작업에서는 모의 테스트만 실행하며 운영 CLI/AI/Google API/웹훅은 실행하지 않는다. `--loop`는 60초마다 조회하며 Windows 스케줄러를 등록하지 않는다. Chat 조회 자체는 AI 호출이 아니다. 기존 구독·PC를 쓰고 신규 유료 API/서버/터널은 요구하지 않지만 실제 계정 쿼터·권한·비용 조건과 Antigravity 로그인/JSON 출력은 운영 PC 검증이 필요하다.
+
+
+## AI 호출·응답 경계 (PR #29 오프라인 점검)
+
+- CLI는 기존 `plan`, `--settings {"useG1Credits":false}`, 540초 CLI 제한을 유지하고 `--output-format json --json-schema`를 사용한다. shell은 사용하지 않는다.
+- wire 스키마는 루트 object, 필수 `factIds`(string 배열, 최대 12개), 필수 `advice`(string)뿐이다. enum·nullable·union·추가 중첩 객체는 사용하지 않는다. `advice: ""`는 일반 string으로 전달해 빈 enum 항목의 HTTP 400을 피한다. `[]`는 허용하고 null·누락·다른 타입은 허용하지 않는다. wire가 허용할 수 있는 추가 속성은 로컬에서 차단한다.
+- 로컬에서 두 필드만 허용하고, 기존 5개 허용 문구(빈 문자열 포함)와 최신 근거 ID를 다시 검증한다. 기존 업무 판단·보고 규칙을 완화하지 않는다. 자유 텍스트·코드 블록·부분 JSON 추출·실패 응답의 구조화 값으로 우회하지 않는다.
+- stdout/stderr는 UTF-8 스트림으로 읽는다. stdout 64,000바이트, 로컬 실행 10분 제한 및 정기 보고 보호 중단을 유지한다. Windows는 인자 이스케이프 후 32,767 UTF-16 단위 제한도 실행 전에 확인한다.
+- 정상 SUCCESS+structured_output은 일반 stderr 진단 문구에 의해 실패하지 않는다. 실패는 요청 스키마/구독·속도 제한/출력 토큰/인증/실행/시간·출력 크기/JSON/응답 구조/근거로 구분한다. 질문 상태의 `failure`에는 고정 유형과 안전한 종료 코드·signal만 보존하고 원본 stderr·프롬프트·비밀값은 넣지 않는다. 기존 오류일 추가 호출 차단과 발송 금지는 그대로다.
+- 오프라인 회귀는 합성 프로세스·고정 사례만 사용한다. 실제 CLI→서버의 스키마 수신, 모델 내부 토큰 제한·재시도, 최신 버전과의 통합은 오프라인 통과만으로 확인할 수 없다. 실제 AI 재호출은 이 점검에서 수행하지 않는다.
+
+검토 근거: [Antigravity headless JSON 계약](https://antigravity.google/docs/cli/headless/), [Gemini function schema](https://ai.google.dev/api/caching#Schema). wire 스키마는 문서의 object/array/string/required/maxItems 범위로 제한했다. 이전 실제 `enum[0]` 오류와 토큰 잘림 기록은 합성 회귀로 재현하며 회사 자료는 테스트에 포함하지 않는다.

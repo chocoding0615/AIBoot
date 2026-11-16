@@ -82,16 +82,32 @@ export function safeAdvice(text, facts) {
   const evidence = facts.map(f => f.text).join(' ');
   return [...text.matchAll(/\d+(?:[-/:.]\d+)*/g)].every(([number]) => evidence.includes(number));
 }
+const AI_FAILURE_CODES = new Set(['AI_INPUT_LIMIT', 'AI_REPORT_PROTECTION', 'AI_SPAWN_ERROR', 'AI_EXECUTION_TIMEOUT', 'AI_OUTPUT_LIMIT', 'AI_OUTPUT_TOKEN_LIMIT', 'AI_REQUEST_SCHEMA', 'AI_SUBSCRIPTION_LIMIT', 'AI_AUTH_ERROR', 'AI_EXIT_ERROR', 'AI_OUTPUT_JSON', 'AI_OUTPUT_SCHEMA', 'AI_EVIDENCE', 'AI_ANSWER_LIMIT']);
+export function aiFailure(code, details = {}) {
+  const error = new Error(AI_FAILURE_CODES.has(code) ? code : 'AI_EXECUTION_ERROR');
+  error.code = error.message;
+  if (Number.isInteger(details.exitCode)) error.exitCode = details.exitCode;
+  if (typeof details.signal === 'string' && /^SIG[A-Z0-9]+$/.test(details.signal)) error.signal = details.signal;
+  return error;
+}
+export function validateAnswer(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      Object.keys(value).length !== 2 || !Object.hasOwn(value, 'factIds') || !Object.hasOwn(value, 'advice') ||
+      !Array.isArray(value.factIds) || value.factIds.length > 12 || value.factIds.some(id => typeof id !== 'string') ||
+      typeof value.advice !== 'string' || !ADVICE.includes(value.advice)) throw aiFailure('AI_OUTPUT_SCHEMA');
+  return value;
+}
 export function renderAnswer(raw, snapshot) {
-  const value = JSON.parse(raw);
-  if (!Array.isArray(value.factIds) || value.factIds.length > 12) throw new Error('답변 근거 형식 오류');
+  let value;
+  try { value = JSON.parse(raw); } catch { throw aiFailure('AI_OUTPUT_JSON'); }
+  validateAnswer(value);
   const selected = value.factIds.map(id => snapshot.facts.find(f => f.id === id));
-  if (selected.some(x => !x) || !safeAdvice(value.advice || '', selected)) throw new Error('출처 없는 답변 또는 상태 단정 차단');
+  if (selected.some(x => !x) || !safeAdvice(value.advice || '', selected)) throw aiFailure('AI_EVIDENCE');
   const lines = selected.map(f => `- ${f.text}\n  출처: ${f.id}`);
   const unavailable = Object.entries(snapshot.sources).filter(([, v]) => v !== '연결').map(([s, v]) => `${s}: 확인 불가(${v})`);
   const answer = [lines.length ? '최신 원본 확인' : '질문에 답할 최신 근거를 확인하지 못했습니다.', ...lines, ...unavailable,
     value.advice ? `AI 제안(미실행): ${value.advice}` : ''].filter(Boolean).join('\n');
-  if (answer.length > 6000 || /chat\.googleapis\.com|key=AIza|token=/.test(answer)) throw new Error('답변 길이/비밀값 검사 실패');
+  if (answer.length > 6000 || /chat\.googleapis\.com|key=AIza|token=/.test(answer)) throw aiFailure('AI_ANSWER_LIMIT');
   return answer;
 }
 export function prompt(question, snapshot, state, policy) {
@@ -156,7 +172,11 @@ export async function answerPending(state, c, io) {
       q.answer = renderAnswer(raw, snapshot);
       q.sourceIds = sources; q.evidenceHash = evidenceHash;
       state.context.push({ at: now.toISOString(), facts: snapshot.facts.slice(0, 8).map(f => ({ id: f.id, source: f.source, text: f.text.slice(0, 300) })) });
-    } catch {
+    } catch (error) {
+      const failure = aiFailure(error?.code, error || {});
+      q.failure = { type: failure.code };
+      if (Number.isInteger(failure.exitCode)) q.failure.exitCode = failure.exitCode;
+      if (failure.signal) q.failure.signal = failure.signal;
       q.status = blocked() ? 'pending' : 'blocked';
       if (q.status === 'blocked') state.aiPausedDay = date;
       q.error = q.status === 'pending' ? '정기 보고 보호 중단 — 질문 보존' : 'AI 한도/실행/근거 검증 실패 — 당일 추가 AI 호출 중지'; io.save();
@@ -165,6 +185,7 @@ export async function answerPending(state, c, io) {
   }
   remember(state, 'user', q.text, q.at);
   remember(state, 'assistant', q.answer, io.now().toISOString());
+  delete q.failure; delete q.error;
   q.status = 'preview'; io.save();
   return { status: '답변 생성·미발송', question: q.id };
 }
