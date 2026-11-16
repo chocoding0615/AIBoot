@@ -7,7 +7,7 @@ export function validateConfig(c, report) {
   if (!/^spaces\/[\w-]+$/.test(c.space || '') || !/^users\/\d+$/.test(c.owner || '')) throw new Error('대화 공간과 canonical 사용자 ID 설정 필요');
   if ((report.chatSpaces || []).some(x => (x.startsWith('spaces/') ? x : `spaces/${x}`) === c.space)) throw new Error('업무 참조 공간은 대화 공간으로 사용할 수 없음');
   if (!c.startAt || !Number.isFinite(Date.parse(c.startAt))) throw new Error('명시적인 최초 질문 수집 시작시각 필요');
-  if (!Number.isInteger(c.maxDailyCalls) || c.maxDailyCalls < 1 || c.maxDailyCalls > 20) throw new Error('일일 AI 호출 상한(1~20) 필요');
+  if (c.maxDailyCalls !== null && (!Number.isInteger(c.maxDailyCalls) || c.maxDailyCalls < 1 || c.maxDailyCalls > 20)) throw new Error('AI 호출 정책 필요: null(필요시) 또는 일일 상한(1~20)');
   if (c.deliveryApproved === true) {
     const url = new URL(report.webhookUrl);
     if (url.protocol !== 'https:' || url.hostname !== 'chat.googleapis.com' || url.pathname !== `/v1/${c.space}/messages`) throw new Error('웹훅 대상과 대화 공간 불일치');
@@ -146,7 +146,7 @@ export async function answerPending(state, c, io) {
   } else {
     const date = kst(now).slice(0, 10);
     if (state.aiPausedDay === date) return { status: 'AI 오류일 보호: 질문 보존·대기' };
-    if ((state.usage[date] || 0) >= c.maxDailyCalls) return { status: '일일 AI 상한: 질문 보존·대기' };
+    if (c.maxDailyCalls !== null && (state.usage[date] || 0) >= c.maxDailyCalls) return { status: '일일 AI 상한: 질문 보존·대기' };
     const snapshot = await io.readSources(sources);
     if (blocked()) return { status: '정기 보고 보호: 대화 처리 대기' };
     q.status = 'generating'; state.usage[date] = (state.usage[date] || 0) + 1; io.save();

@@ -149,3 +149,20 @@ test('proposal dedup ignores daily D-day wording changes for the same source sub
   fresh.facts[0].text += ' (D-3)'; fresh.facts[1].id += '-new-display';
   assert.equal(proposals(fresh, reports, state, now).candidates.length, 0);
 });
+
+
+test('on-demand policy validates explicitly and keeps counting without a daily cap', async () => {
+  assert.doesNotThrow(() => validateConfig({ ...config, maxDailyCalls: null }, {}));
+  for (const value of [undefined, 'on-demand', Infinity, -1]) assert.throws(() => validateConfig({ ...config, maxDailyCalls: value }, {}));
+  const state = queue(); state.usage['2026-11-16'] = 25;
+  await answerPending(state, { ...config, maxDailyCalls: null }, io(state));
+  assert.equal(state.questions.q.status, 'preview');
+  assert.equal(state.usage['2026-11-16'], 26);
+  state.questions.next = { id: 'next', text: state.questions.q.text, at: now.toISOString(), status: 'pending' };
+  let calls = 0;
+  const tools = io(state, { generate: async () => { calls++; throw new Error('QUOTA'); } });
+  await answerPending(state, { ...config, maxDailyCalls: null }, tools);
+  await answerPending(state, { ...config, maxDailyCalls: null }, tools);
+  assert.equal(calls, 1);
+  assert.equal(state.aiPausedDay, '2026-11-16');
+});

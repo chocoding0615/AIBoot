@@ -121,7 +121,7 @@ test('bounded prompt labels old context and incomplete fresh evidence, keeps cur
 test('Antigravity adapter uses isolated cwd, no shell, plan flags and no repeated calls', async () => {
   let calls = 0, cwd;
   const launch = (file, args, options) => {
-    calls++; cwd = options.cwd; assert.equal(options.shell, false); assert.ok(args.includes('plan'));
+    calls++; cwd = options.cwd; assert.equal(options.shell, false); assert.ok(args.includes('plan')); assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { useG1Credits: false });
     const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
     queueMicrotask(() => { child.stdout.write('{"factIds":[],"advice":""}'); child.emit('close', 0); });
     return child;

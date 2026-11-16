@@ -19,7 +19,7 @@ export function generateAntigravity(text, blocked, { executable = path.join(os.h
       try { fs.rmSync(temporary, { recursive: true, force: true }); } catch {}
       failure ? reject(new Error('AI 실행/한도/보고 보호 중단')) : resolve(result);
     };
-    try { child = launch(executable, ['-p', text, '--mode', 'plan', '--print-timeout', '540s'], { cwd: temporary, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] }); }
+    try { child = launch(executable, ['--settings', JSON.stringify({ useG1Credits: false }), '-p', text, '--mode', 'plan', '--print-timeout', '540s'], { cwd: temporary, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] }); }
     catch { finish(true); return; }
     const deadline = Date.now() + 10 * 60000;
     timer = setInterval(() => {
