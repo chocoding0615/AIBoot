@@ -55,3 +55,16 @@ node integrations/chat-assistant/cli.mjs --once --propose
 - 오프라인 회귀는 합성 프로세스·고정 사례만 사용한다. 실제 CLI→서버의 스키마 수신, 모델 내부 토큰 제한·재시도, 최신 버전과의 통합은 오프라인 통과만으로 확인할 수 없다. 실제 AI 재호출은 이 점검에서 수행하지 않는다.
 
 검토 근거: [Antigravity headless JSON 계약](https://antigravity.google/docs/cli/headless/), [Gemini function schema](https://ai.google.dev/api/caching#Schema). wire 스키마는 문서의 object/array/string/required/maxItems 범위로 제한했다. 이전 실제 `enum[0]` 오류와 토큰 잘림 기록은 합성 회귀로 재현하며 회사 자료는 테스트에 포함하지 않는다.
+
+
+## v1 후속 실제 검증 — 운영 활성화 보류
+
+PR #29 `88f810a`를 배포하지 않고 별도 상태에서 실제 업무 질문 1건을 호출했다. 스키마 등록은 성공했지만 CLI가 exit 0 / SUCCESS, 빈 response, structured_output 누락을 반환하여 기존 엄격 검증이 `AI_OUTPUT_SCHEMA`로 차단했다. 이후 AI 호출은 중단했고, 성공이 선행되어야 하는 후속 대화 검증은 실행하지 않았다.
+
+기존 로그와 해당 대화 기록에서 plan 모드 에이전트가 파일 목록을 읽는 shell 명령을 선택하고 headless 권한 정책에 거절된 것을 확인했다. 따라서 이번 실패는 enum 필드 오류나 구독 부족이 아니다. `--json-schema`는 최종 답변 계약이며 에이전트의 도구 선택을 금지하는 설정이 아니다. 현재 plan/headless 조합을 입력 자료만 사용하는 순수 업무 질의 경로로 안정적이라고 판정할 수 없다. 명령 권한 확대나 `--dangerously-skip-permissions`로 해결하지 않는다. 권한을 우회하지 않는 도구 없는 자료 질의 경로의 적합성을 검토하고, 실호출 재시도는 별도 승인 대상으로 남긴다.
+
+[CLI 공식 headless 권한 설명](https://antigravity.google/docs/cli/headless/#permissions-in-headless-mode)은 대화형 승인을 받을 수 없는 도구를 soft-deny하고 exit 0으로 종료할 수 있음을 설명한다. [upstream #794](https://github.com/google-antigravity/antigravity-cli/issues/794)에도 구조화 출력 누락과 같은 증상이 보고되어 있다. 이번 환경의 원인 판정은 실제 저장 로그·대화 단계에 근거하며, 외부 이슈만으로 추정하지 않았다.
+
+최신 연결 자료를 읽기 전용으로 비교한 제안 검증은 6개 영역 조회 성공, 정기 보고 15건 확인, 동일 대상/확정 날짜의 서로 다른 원본 쌍 0개, 후보 0건이다. 정기 보고 중복 제거 전에 연결 쌍이 없었으므로 중복 제거 때문에 후보가 없어진 것으로 해석하지 않는다. Chat 53건은 확정 날짜 필드 0개·공통 대상명 1개이며, Sheets와의 의미 기반 연결은 현 구현에서 검증되지 않았다. 근거 없는 후보는 만들지 않았다.
+
+이번 추가 작업은 실행 코드·업무 규칙·권한·스케줄러·원장·설정·발송을 변경하지 않고 문서와 저장소 밖 검증 기록만 추가했다. 이전 174개 오프라인 테스트는 반복하지 않았다. main 병합, 운영 배포, 자동 발송 활성화는 각각 사용자 별도 승인 전 수행하지 않는다. 실제 PC 재부팅 및 실제 10개 메시지 후속 대화 검증은 미완료다.
