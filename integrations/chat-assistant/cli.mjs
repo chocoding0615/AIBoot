@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { collect, answerPending, deliverPreview, validateConfig, proposals, validateAnswer, aiFailure } from './core.mjs';
+import { collect, answerPending, deliverPreview, validateConfig, proposals, aiFailure } from './core.mjs';
 import { openStore } from './store.mjs';
 import { clients, readSources, fixedRules, recentReports } from './sources.mjs';
 
@@ -42,7 +42,7 @@ export function generateAntigravity(text, blocked, { executable = path.join(os.h
       if (/timed? ?out|deadline exceeded|DEADLINE_EXCEEDED/i.test(text)) return 'AI_EXECUTION_TIMEOUT';
       return 'AI_EXIT_ERROR';
     };
-    const args = ['--settings', JSON.stringify({ useG1Credits: false }), '-p', text, '--output-format', 'json', '--json-schema', JSON.stringify(schema), '--mode', 'plan', '--print-timeout', '540s'];
+    const args = ['--settings', JSON.stringify({ useG1Credits: false, agentMode: '', toolPermission: 'strict' }), '--disable-slash-commands', '-p', text, '--output-format', 'json', '--json-schema', JSON.stringify(schema), '--print-timeout', '540s'];
     // Count UTF-16 command-line units after Windows quoting, including JSON quotes.
     const quotedLength = value => {
       let length = 2, slashes = 0;
@@ -85,8 +85,8 @@ export function generateAntigravity(text, blocked, { executable = path.join(os.h
       if (exitCode !== 0 || envelope.status !== 'SUCCESS') {
         finish(classify(typeof envelope.error === 'string' && envelope.error ? envelope.error : stderr)); return;
       }
-      try { finish(null, validateAnswer(envelope.structured_output)); }
-      catch { finish('AI_OUTPUT_SCHEMA'); }
+      if (!Object.hasOwn(envelope, 'structured_output')) { finish('AI_OUTPUT_SCHEMA'); return; }
+      finish(null, envelope.structured_output);
     });
   });
 }

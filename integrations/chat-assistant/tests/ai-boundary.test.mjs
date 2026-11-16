@@ -39,9 +39,9 @@ const rejects = async (promise, code, exitCode) => assert.rejects(promise, error
 test('wire schema uses supported object/array/string/required subset; empty advice remains valid locally', async () => {
   const f = launchFixture({ inspect: (file, args, options) => {
     assert.equal(options.shell, false); assert.equal(options.windowsHide, true);
-    assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { useG1Credits: false });
+    assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { useG1Credits: false, agentMode: '', toolPermission: 'strict' });
     assert.equal(args[args.indexOf('--output-format') + 1], 'json');
-    assert.equal(args[args.indexOf('--mode') + 1], 'plan');
+    assert.ok(!args.includes('--mode')); assert.ok(args.includes('--disable-slash-commands'));
     assert.equal(args[args.indexOf('--print-timeout') + 1], '540s');
     const schema = JSON.parse(args[args.indexOf('--json-schema') + 1]);
     assert.deepEqual(schema, { type: 'object', properties: { factIds: { type: 'array', maxItems: 12, items: { type: 'string' } }, advice: { type: 'string' } }, required: ['factIds', 'advice'] });
@@ -107,7 +107,7 @@ test('malformed or incomplete JSON envelopes never fall back to response text', 
     JSON.stringify({ status: 'SUCCESS', response: JSON.stringify(good) }),
     JSON.stringify({ status: 'SUCCESS', structured_output: null }),
     JSON.stringify({ status: 'SUCCESS', structured_output: { factIds: [], advice: false } })]) {
-    const f = launchFixture({ output }); await assert.rejects(run(f)); assert.equal(f.calls, 1);
+    const f = launchFixture({ output }); await assert.rejects(async () => validateAnswer(JSON.parse(await run(f)))); assert.equal(f.calls, 1);
   }
   for (const status of ['ERROR', 'CANCELED', 'INTERRUPTED', 'INVALID', 'WAITING', 'RUNNING']) {
     await rejects(run(launchFixture({ output: envelope(good, { status }) })), 'AI_EXIT_ERROR', 0);
@@ -174,13 +174,12 @@ test('failure pipeline persists safe exit/type, pauses retries and never posts',
     generate: async () => { calls++; throw aiFailure('AI_REQUEST_SCHEMA', { exitCode: 3, signal: 'invalid private secret' }); }, post: async () => { posts++; } };
   await answerPending(state, { maxDailyCalls: null }, io);
   assert.deepEqual(state.questions.q.failure, { type: 'AI_REQUEST_SCHEMA', exitCode: 3 });
-  state.questions.next = { id: 'next', text: '계약 확인', status: 'pending' };
   await answerPending(state, { maxDailyCalls: null }, io);
-  assert.equal(calls, 1); assert.equal(posts, 0); assert.equal(state.aiPausedDay, '2026-11-16');
+  assert.equal(calls, 1); assert.equal(posts, 0); assert.equal(state.aiPausedDay, undefined);
   assert.ok(!JSON.stringify(state).includes('private secret'));
 });
 
-test('evidence failure is distinguished from execution and still pauses further generation', async () => {
+test('evidence failure is distinguished from execution and blocks only that question', async () => {
   const now = new Date('2026-11-16T03:00:00Z'), state = initialState();
   state.questions.q = { id: 'q', text: '계약서 확인', status: 'pending' };
   await answerPending(state, { maxDailyCalls: null }, { now: () => now, reportLedger: () => ({}), save: () => {}, policy: '', readSources: async () => ({ sources: {contracts: '연결'}, facts: [] }), generate: async () => JSON.stringify({ factIds: ['invented'], advice: '' }) });
@@ -189,7 +188,7 @@ test('evidence failure is distinguished from execution and still pauses further 
 
 
 test('regression: already-corrupted question-mark advice is rejected instead of accepted as Korean', async () => {
-  await rejects(run(launchFixture({ output: envelope({factIds: [], advice: '?? ??'}) })), 'AI_OUTPUT_SCHEMA', 0);
+  await assert.rejects(async () => validateAnswer(JSON.parse(await run(launchFixture({ output: envelope({factIds: [], advice: '?? ??'}) })))), {code:'AI_OUTPUT_SCHEMA'});
 });
 
 test('stdout/stderr read errors settle once without exposing raw exceptions', async () => {
@@ -211,7 +210,7 @@ test('real offline child process confirms UTF-8 pipes and JSON envelope ingestio
   assert.equal(calls, 1);
 });
 
-test('real offline exit-3 schema error survives store restart and pauses further calls', async t => {
+test('real offline exit-3 schema error survives store restart without blocking unrelated questions', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aiboot-boundary-'));
   t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
   let store = openStore(dir), calls = 0;
@@ -226,7 +225,7 @@ test('real offline exit-3 schema error survives store restart and pauses further
   try {
     assert.deepEqual(store.state.questions.q.failure,{type:'AI_REQUEST_SCHEMA',exitCode:3});
     assert.equal(store.state.questions.q.status,'blocked');
-    assert.equal(store.state.aiPausedDay,'2026-11-16');
+    assert.equal(store.state.aiPausedDay,undefined);
     assert.ok(!fs.readFileSync(path.join(dir,'state.json'),'utf8').includes('private secret'));
   } finally {store.close();}
   assert.equal(calls,1);

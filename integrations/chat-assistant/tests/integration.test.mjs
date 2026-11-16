@@ -9,7 +9,7 @@ import { PassThrough } from 'node:stream';
 import { spawnSync } from 'node:child_process';
 import { openStore } from '../store.mjs';
 import { fixedRules, readSources, recentReports } from '../sources.mjs';
-import { collect, answerPending, deliverPreview, prompt, initialState, proposals } from '../core.mjs';
+import { collect, answerPending, deliverPreview, prompt, initialState, proposals, validateAnswer } from '../core.mjs';
 import { generateAntigravity } from '../cli.mjs';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
@@ -118,10 +118,10 @@ test('bounded prompt labels old context and incomplete fresh evidence, keeps cur
   const text = prompt('공지 알려줘', data, state, 'CURRENT POLICY');
   assert.ok(text.length <= 28000); assert.match(text, /CURRENT POLICY/); assert.match(text, /일부 근거 제외/);
 });
-test('Antigravity adapter uses isolated cwd, no shell, plan flags and no repeated calls', async () => {
+test('Antigravity adapter uses isolated cwd, no shell, data-only settings and no repeated calls', async () => {
   let calls = 0, cwd;
   const launch = (file, args, options) => {
-    calls++; cwd = options.cwd; assert.equal(options.shell, false); assert.ok(args.includes('plan')); assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { useG1Credits: false }); assert.equal(args[args.indexOf('--output-format') + 1], 'json'); assert.deepEqual(JSON.parse(args[args.indexOf('--json-schema') + 1]).required, ['factIds', 'advice']);
+    calls++; cwd = options.cwd; assert.equal(options.shell, false); assert.ok(!args.includes('--mode')); assert.ok(args.includes('--disable-slash-commands')); assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { useG1Credits: false, agentMode: '', toolPermission: 'strict' }); assert.equal(args[args.indexOf('--output-format') + 1], 'json'); assert.deepEqual(JSON.parse(args[args.indexOf('--json-schema') + 1]).required, ['factIds', 'advice']);
     const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
     queueMicrotask(() => { child.stdout.write(JSON.stringify({ status: 'SUCCESS', structured_output: { factIds: [], advice: '' } })); child.emit('close', 0); });
     return child;
@@ -195,6 +195,6 @@ test('Antigravity adapter rejects missing schema output, non-success status and 
       queueMicrotask(() => { child.stdout.write(output); child.emit('close', 0); });
       return child;
     };
-    await assert.rejects(generateAntigravity('fixture', () => false, { launch }));
+    await assert.rejects(async () => validateAnswer(JSON.parse(await generateAntigravity('fixture', () => false, { launch }))));
   }
 });
