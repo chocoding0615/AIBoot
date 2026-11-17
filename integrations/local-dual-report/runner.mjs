@@ -18,6 +18,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { HISTORY_TAB, loadHolidays, makeCalendar, readRecurringSource, recurringLines, recurringOmissions } from './recurring.mjs';
 import { retryNote, runPlan } from './operating.mjs';
+import { readReportCompletions, reportRecurring, completedRecommendations } from '../chat-assistant/completion.mjs';
 
 const HOME = path.join(os.homedir(), '.aiboot');
 const CONFIG = path.join(HOME, 'config.json');
@@ -406,10 +407,16 @@ async function snapshot(c, slot = '') {
   // Recurring work: rules in the [MS] 김현호 task tab plus its per-occurrence history. Unknown dates stay unknown.
   // The old dated task tab is no longer a source and is never parsed as rules.
   const recurring = [];
+  let completedRecurring = [];
   if (c.recurringSpreadsheetId) {
     try {
       const source = await readRecurringSource(sheets.spreadsheets, c.recurringSpreadsheetId, log);
-      recurring.push(...recurringLines(source, makeCalendar(await holidayData(), c), today()));
+      const cal = makeCalendar(await holidayData(), c);
+      const completion = readReportCompletions(HOME, today());
+      const projected = reportRecurring(source, cal, today(), c.recurringSpreadsheetId, recurringLines(source, cal, today()), completion.history);
+      recurring.push(...projected.lines);
+      completedRecurring = projected.completed;
+      if (completion.status === '조회 실패') sources['사용자 확인 완료 이력'] = '조회 실패 — 완료 제외에 사용하지 않음';
       sources['정기 업무([MS] 김현호 업무 A:E)'] = '연결';
       if (source.historyState !== '연결') log('recurring history: ' + source.historyState);
       if (source.registered === false) log('recurring source not registered in Master_Sheet');
@@ -447,7 +454,7 @@ async function snapshot(c, slot = '') {
   sources['회사 자체 캘린더'] = '미연결';
   const ch = await chatSnapshot(c, today(), { slot });
   sources['지정 Chat 스페이스 2개'] = ch.status;
-  return { text: out.join('\n'), jp, sources, contracts, licenses, welfare, recurring, chatText: ch.status === '연결' || /^일부/.test(ch.status) ? ch.text : '', chatReadAt: ch.readAt };
+  return { text: out.join('\n'), jp, sources, contracts, licenses, welfare, recurring, completedRecurring, chatText: ch.status === '연결' || /^일부/.test(ch.status) ? ch.text : '', chatReadAt: ch.readAt };
 }
 
 /** Facts computed in code so both agents receive identical dates (no date arithmetic left to the model). */
@@ -479,7 +486,11 @@ async function facts(date, c, snap) {
     '',
     `[정기 업무 — 연결된 원본에서 확인된 것만. 원본에 없는 기한·일정은 만들지 말고 "미입력"은 그대로 미입력으로 쓴다] 아래 항목이 있으면 오늘 남은 일에 [정기 업무]를 표시한다`,
     ...(snap.recurring?.length ? snap.recurring.map(r => `- ${r}`) : ['- 없음']),
-    `- 회차의 완료·보류는 ${HISTORY_TAB} 탭 기록만 기준이고 코드가 이미 반영했다. 위 목록에 있는 회차를 완료로 쓰지 말 것`,
+    snap.completedRecurring?.length
+      ? `- 회차 전체 상태는 ${HISTORY_TAB} 탭, 사용자 확인한 개별 행위는 아래 완료 행위 목록을 기준으로 코드가 반영했다. 위 목록에 남아 있는 회차를 완료로 쓰지 말 것`
+      : `- 회차의 완료·보류는 ${HISTORY_TAB} 탭 기록만 기준이고 코드가 이미 반영했다. 위 목록에 있는 회차를 완료로 쓰지 말 것`,
+    ...(snap.completedRecurring?.length ? ['[사용자 확인 완료 행위 — 아래 회차·행위만 재추천 금지. 다른 행위·다음 회차는 유지. 과거 Chat 요청보다 이 확인 기록을 우선한다]',
+      ...snap.completedRecurring.map(r => `- ${r.title}: ${r.basis} — ${r.action} 완료 확인. 동일 행위를 요약 추천·남은 일·다음 업무에 다시 요청하지 말 것. 다른 행위·다음 회차 완료를 뜻하지 않음`)] : []),
     '- 정기 신고·점검: 일정 원본 미연결 — 내용을 쓰지 말 것',
     '- 보험 계약(화재보험 등)이 [계약서] 목록에 있으면 [계약서]에서만 다루고 [정기 업무]에 중복하지 말 것',
     '',
@@ -487,7 +498,7 @@ async function facts(date, c, snap) {
   ].join('\n');
   return { text, nextHeading, sched, imminentDays, undated, sources: snap.sources, chatText: snap.chatText,
     welfareOk: Object.entries(snap.sources).some(([k, v]) => k.startsWith('복지') && v === '연결'),
-    welfareImminent: (snap.welfare || []).filter(w => w.d <= IMMINENT_DAYS), recurring: snap.recurring || [] };
+    welfareImminent: (snap.welfare || []).filter(w => w.d <= IMMINENT_DAYS), recurring: snap.recurring || [], completedRecurring: snap.completedRecurring || [] };
 }
 
 /* ---------- independent agent runs ---------- */
@@ -549,7 +560,7 @@ function prompt(slot, date, snap, f) {
 
 /** Deterministic checks of the latest operating standard. Returns a list of violations (empty = pass). */
 function validate(chat, f) {
-  const errs = [];
+  const errs = completedRecommendations(chat, f.completedRecurring, f.nextHeading, f.recurring);
   const lines = chat.split('\n');
   const h = HEADINGS(f.nextHeading);
   const idx = h.map(x => lines.findIndex(l => l.trim() === x));

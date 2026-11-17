@@ -5,6 +5,15 @@ import { createRequire } from 'node:module';
 import { fact, kst } from './core.mjs';
 import { readRecurringSource, recurringLines, loadHolidays, makeCalendar } from '../local-dual-report/recurring.mjs';
 import { parseContracts, parseLicenses, parseVehicles, parseWelfare } from '../../tools/fixed-expense-flow/domains.mjs';
+import { completionTargets, filterCompletedRecurring } from './completion.mjs';
+
+export async function readCompletionSource({ report, sheets, home, now = new Date(), fetcher = fetch }) {
+  if (!report.recurringSpreadsheetId) throw new Error('정기 업무 미설정');
+  const today = kst(now).slice(0, 10);
+  const source = await readRecurringSource(sheets(), report.recurringSpreadsheetId);
+  const holidays = await loadHolidays({ file: path.join(home, 'holidays.json'), today, save: false, fetcher });
+  return { source, today, cal: makeCalendar(holidays, report), scope: fact('recurring', report.recurringSpreadsheetId, '', '').id };
+}
 
 /** Same approach as build-evidence.mjs: reuse pure runner calculations without importing/running its main(). */
 export function fixedRules(repo) {
@@ -35,7 +44,7 @@ export function clients(report, home) {
 }
 
 /** Strictly reads only existing connected resources. Each failed category remains explicitly unavailable. */
-export async function readSources(ids, { report, chat, sheets, rules, home, now = new Date(), fetcher = fetch }) {
+export async function readSources(ids, { report, chat, sheets, rules, home, now = new Date(), fetcher = fetch, completionHistory = {} }) {
   const date = kst(now).slice(0, 10), facts = [], sources = {};
   const add = (source, key, subject, text, extra) => facts.push(fact(source, key, subject, text, extra));
   const batch = async (spreadsheetId, ranges) => {
@@ -82,10 +91,12 @@ export async function readSources(ids, { report, chat, sheets, rules, home, now 
         }
       } else if (source === 'recurring') {
         if (!report.recurringSpreadsheetId) throw new Error('미설정');
-        const raw = await readRecurringSource(sheets(), report.recurringSpreadsheetId);
-        const holidays = await loadHolidays({ file: path.join(home, 'holidays.json'), today: date, save: false, fetcher });
-        const lines = recurringLines(raw, makeCalendar(holidays, report), date);
-        lines.forEach((text, i) => add(source, `${i}|${text}`, text.split(':')[0], text, { date: /\d{4}-\d{2}-\d{2}/.exec(text)?.[0] }));
+        const data = await readCompletionSource({ report, sheets, home, now, fetcher });
+        const targets = completionTargets(data.source, data.cal, date, data.scope);
+        const lines = recurringLines(data.source, data.cal, date);
+        filterCompletedRecurring(lines, targets, completionHistory).forEach(({text, target}, i) => {
+          add(source, `${i}|${text}`, text.split(':')[0], text, { ...target, date: /\d{4}-\d{2}-\d{2}/.exec(text)?.[0] });
+        });
       } else if (source === 'chat') {
         if (!Array.isArray(report.chatSpaces) || report.chatSpaces.length !== 2) throw new Error('지정 공간 확인 필요');
         for (const space of report.chatSpaces) {

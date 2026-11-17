@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, collect, validateConfig, reportBlocked, recover, remember, pruneContext, selectSources, fact, renderAnswer, proposals, answerPending, deliverPreview } from '../core.mjs';
+import { initialState, collect, validateConfig, reportBlocked, recover, remember, pruneContext, selectSources, fact, renderAnswer, proposals, answerPending, deliverPreview, aiFailure } from '../core.mjs';
 
 const now = new Date('2026-11-16T03:00:00Z'); // Noon KST
 const config = { space: 'spaces/dialog', owner: 'users/123', startAt: '2026-11-16T00:00:00Z', maxDailyCalls: 2 };
@@ -98,7 +98,7 @@ test('daily cap preserves pending question; quota failure consumes one attempt w
   const state = queue(); state.usage['2026-11-16'] = 2;
   assert.match((await answerPending(state, config, io(state))).status, /상한/); assert.equal(state.questions.q.status, 'pending');
   state.usage = {}; let count = 0;
-  const tools = io(state, { generate: async () => { count++; throw new Error('QUOTA'); } });
+  const tools = io(state, { generate: async () => { count++; throw aiFailure('AI_SUBSCRIPTION_LIMIT'); } });
   await answerPending(state, config, tools); await answerPending(state, config, tools);
   assert.equal(count, 1); assert.equal(state.usage['2026-11-16'], 1); assert.equal(state.questions.q.status, 'blocked');
 });
@@ -134,11 +134,11 @@ test('unsupported factual advice cannot introduce an approval absence or a new t
   const fresh = snap();
   for (const advice of ['대표가 휴가이므로 결재를 앞당기세요.', '새로운 세무 신고가 필요합니다.']) assert.throws(() => renderAnswer(JSON.stringify({factIds: [fresh.facts[0].id], advice}), fresh));
 });
-test('a quota/validation failure pauses other pending questions for the same KST day', async () => {
-  const state = queue(); const tools = io(state, {generate: async () => {throw new Error('quota');}});
+test('a subscription limit pauses other pending questions for the same KST day', async () => {
+  const state = queue(); const tools = io(state, {generate: async () => {throw aiFailure('AI_SUBSCRIPTION_LIMIT');}});
   await answerPending(state, config, tools);
   state.questions.next = {id: 'next', text: '계약 확인', at: now.toISOString(), status: 'pending'};
-  assert.match((await answerPending(state, config, tools)).status, /오류일 보호/);
+  assert.match((await answerPending(state, config, tools)).status, /AI 대기 상태/);
   assert.equal(state.questions.next.status, 'pending');
 });
 
@@ -148,4 +148,41 @@ test('proposal dedup ignores daily D-day wording changes for the same source sub
   assert.equal(proposals(fresh, reports, state, now).candidates.length, 1);
   fresh.facts[0].text += ' (D-3)'; fresh.facts[1].id += '-new-display';
   assert.equal(proposals(fresh, reports, state, now).candidates.length, 0);
+});
+
+
+test('on-demand policy validates explicitly and keeps counting without a daily cap', async () => {
+  assert.doesNotThrow(() => validateConfig({ ...config, maxDailyCalls: null }, {}));
+  for (const value of [undefined, 'on-demand', Infinity, -1]) assert.throws(() => validateConfig({ ...config, maxDailyCalls: value }, {}));
+  const state = queue(); state.usage['2026-11-16'] = 25;
+  await answerPending(state, { ...config, maxDailyCalls: null }, io(state));
+  assert.equal(state.questions.q.status, 'preview');
+  assert.equal(state.usage['2026-11-16'], 26);
+  state.questions.next = { id: 'next', text: state.questions.q.text, at: now.toISOString(), status: 'pending' };
+  let calls = 0;
+  const tools = io(state, { generate: async () => { calls++; throw aiFailure('AI_SUBSCRIPTION_LIMIT'); } });
+  await answerPending(state, { ...config, maxDailyCalls: null }, tools);
+  await answerPending(state, { ...config, maxDailyCalls: null }, tools);
+  assert.equal(calls, 1);
+  assert.equal(state.aiPausedDay, '2026-11-16');
+});
+
+
+test('one invalid answer blocks its question without pausing unrelated questions', async () => {
+  const state=queue();let calls=0;
+  const tools=io(state,{generate:async()=>{calls++;if(calls===1)throw aiFailure('AI_OUTPUT_SCHEMA');return JSON.stringify({factIds:[snap().facts[0].id],advice:''});}});
+  await answerPending(state,{...config,maxDailyCalls:null},tools);
+  assert.equal(state.questions.q.status,'blocked');assert.equal(state.aiPausedDay,undefined);
+  await answerPending(state,{...config,maxDailyCalls:null},tools);assert.equal(calls,1);
+  state.questions.next={id:'next',text:'계약 확인',status:'pending',at:now.toISOString()};
+  await answerPending(state,{...config,maxDailyCalls:null},tools);
+  assert.equal(state.questions.next.status,'preview');assert.equal(calls,2);
+});
+
+test('provided policy and source data do not request additional file lookup', async () => {
+  const state=queue();let captured='';
+  await answerPending(state,config,io(state,{policy:'CURRENT POLICY ALREADY PROVIDED',generate:async text=>{captured=text;return JSON.stringify({factIds:[],advice:''});}}));
+  assert.ok(captured.includes('CURRENT POLICY ALREADY PROVIDED'));
+  assert.ok(captured.includes('추가 파일 조회·명령·도구 실행·데이터 변경 없이 제공된 자료만으로 답한다'));
+  assert.ok(captured.includes(snap().facts[0].id));
 });
