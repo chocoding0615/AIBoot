@@ -5,13 +5,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
-import { collect, answerPending, deliverPreview, validateConfig, proposals, aiFailure } from './core.mjs';
+import { collect, answerPending, deliverPreview, validateConfig, proposals, aiFailure, PROMPT_MAX } from './core.mjs';
+import { readCompletionSource } from './sources.mjs';
 import { openStore } from './store.mjs';
 import { clients, readSources, fixedRules, recentReports } from './sources.mjs';
 
 export function generateAntigravity(text, blocked, { executable = path.join(os.homedir(), 'AppData/Local/agy/bin/agy.exe'), launch = spawn } = {}) {
   try {
-    if (typeof text !== 'string' || text.length > 30000) return Promise.reject(aiFailure('AI_INPUT_LIMIT'));
+    if (typeof text !== 'string' || text.length > PROMPT_MAX) return Promise.reject(aiFailure('AI_INPUT_LIMIT'));
     if (blocked()) return Promise.reject(aiFailure('AI_REPORT_PROTECTION'));
   } catch { return Promise.reject(aiFailure('AI_REPORT_PROTECTION')); }
   // Conservative OpenAPI-compatible wire types. Empty advice is valid STRING;
@@ -21,7 +22,7 @@ export function generateAntigravity(text, blocked, { executable = path.join(os.h
   try { temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'aiboot-dialog-')); }
   catch { return Promise.reject(aiFailure('AI_SPAWN_ERROR')); }
   return new Promise((resolve, reject) => {
-    let child, output = '', stderr = '', outputBytes = 0, settled = false, timer;
+    let child, pending = '', envelope, hasResult = false, invalid = false, stderr = '', settled = false, timer;
     const details = {};
     const finish = (code, value) => {
       if (settled) return;
@@ -42,7 +43,7 @@ export function generateAntigravity(text, blocked, { executable = path.join(os.h
       if (/timed? ?out|deadline exceeded|DEADLINE_EXCEEDED/i.test(text)) return 'AI_EXECUTION_TIMEOUT';
       return 'AI_EXIT_ERROR';
     };
-    const args = ['--settings', JSON.stringify({ useG1Credits: false, agentMode: '', toolPermission: 'strict' }), '--disable-slash-commands', '-p', text, '--output-format', 'json', '--json-schema', JSON.stringify(schema), '--print-timeout', '540s'];
+    const args = ['--settings', JSON.stringify({ useG1Credits: false, agentMode: '', toolPermission: 'strict' }), '--disable-slash-commands', '--input-format', 'stream-json', '--output-format', 'stream-json', '--json-schema', JSON.stringify(schema), '--print-timeout', '540s'];
     // Count UTF-16 command-line units after Windows quoting, including JSON quotes.
     const quotedLength = value => {
       let length = 2, slashes = 0;
@@ -54,7 +55,7 @@ export function generateAntigravity(text, blocked, { executable = path.join(os.h
     };
     if (process.platform === 'win32' && [executable, ...args].reduce((n, value) => n + quotedLength(value) + 1, 0) >= 32767) { finish('AI_INPUT_LIMIT'); return; }
     try {
-      child = launch(executable, args, { cwd: temporary, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = launch(executable, args, { cwd: temporary, windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
       child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     } catch { stop('AI_SPAWN_ERROR'); return; }
     const deadline = Date.now() + 10 * 60000;
@@ -64,11 +65,24 @@ export function generateAntigravity(text, blocked, { executable = path.join(os.h
       catch { stop('AI_REPORT_PROTECTION'); return; }
       if (Date.now() >= deadline) stop('AI_EXECUTION_TIMEOUT');
     }, 1000);
+    const readLine = line => {
+      if (!line.trim()) return;
+      if (Buffer.byteLength(line, 'utf8') > 64000) { stop('AI_OUTPUT_LIMIT'); return; }
+      let event;
+      try { event = JSON.parse(line.replace(/^\uFEFF/, '')); }
+      catch { invalid = true; return; }
+      if (!event || !['init', 'step_update', 'result'].includes(event.event) || hasResult) { invalid = true; return; }
+      if (event.event === 'result') { hasResult = true; envelope = event.result; }
+    };
     child.stdout.on('data', chunk => {
       if (settled) return;
-      outputBytes += Buffer.byteLength(chunk, 'utf8');
-      if (outputBytes > 64000) { stop('AI_OUTPUT_LIMIT'); return; }
-      output += chunk;
+      pending += chunk;
+      let newline;
+      while (!settled && (newline = pending.indexOf('\n')) >= 0) {
+        const line = pending.slice(0, newline); pending = pending.slice(newline + 1);
+        readLine(line);
+      }
+      if (!settled && Buffer.byteLength(pending, 'utf8') > 64000) stop('AI_OUTPUT_LIMIT');
     });
     child.stderr.on('data', chunk => { if (!settled) stderr = (stderr + chunk).slice(-8000); });
     child.stdout.on('error', () => stop('AI_EXIT_ERROR'));
@@ -78,9 +92,9 @@ export function generateAntigravity(text, blocked, { executable = path.join(os.h
       if (settled) return;
       if (Number.isInteger(exitCode)) details.exitCode = exitCode;
       if (typeof signal === 'string' && /^SIG[A-Z0-9]+$/.test(signal)) details.signal = signal;
-      let envelope;
-      try { envelope = JSON.parse(output.replace(/^\uFEFF/, '')); }
-      catch { finish(exitCode === 0 ? 'AI_OUTPUT_JSON' : classify(stderr)); return; }
+      if (pending) readLine(pending);
+      if (settled) return;
+      if (invalid || !envelope) { finish(exitCode === 0 ? 'AI_OUTPUT_JSON' : classify(stderr)); return; }
       if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope) || typeof envelope.status !== 'string') { finish('AI_OUTPUT_SCHEMA'); return; }
       if (exitCode !== 0 || envelope.status !== 'SUCCESS') {
         finish(classify(typeof envelope.error === 'string' && envelope.error ? envelope.error : stderr)); return;
@@ -88,6 +102,9 @@ export function generateAntigravity(text, blocked, { executable = path.join(os.h
       if (!Object.hasOwn(envelope, 'structured_output')) { finish('AI_OUTPUT_SCHEMA'); return; }
       finish(null, envelope.structured_output);
     });
+    child.stdin.on('error', () => stop('AI_EXIT_ERROR'));
+    try { child.stdin.end(JSON.stringify({ event: 'user', message: { content: text } }) + '\n', 'utf8'); }
+    catch { stop('AI_EXIT_ERROR'); }
   });
 }
 
@@ -106,13 +123,14 @@ export async function main(argv = process.argv.slice(2)) {
   if (store.state.identity && store.state.identity !== identity) { store.close(); throw new Error('대화 공간/사용자/시작시각 변경 — 상태 이관 확인 필요'); }
   store.state.identity = identity; store.save();
   const ledger = () => JSON.parse(fs.readFileSync(path.join(home, 'ledger.json'), 'utf8'));
-  const read = ids => readSources(ids, { report, chat: api.chat, sheets: api.sheets, rules, home });
+  const read = ids => readSources(ids, { report, chat: api.chat, sheets: api.sheets, rules, home, completionHistory: store.state.completionHistory });
   try {
     do {
       try {
         const collection = await collect(store.state, c, async args => (await api.chat.spaces.messages.list(args)).data, store.save, new Date());
         const io = { now: () => new Date(), reportLedger: ledger, readSources: read, save: store.save,
-          policy: fs.readFileSync(path.join(repo, 'CURRENT.md'), 'utf8'), generate: generateAntigravity,
+          policy: ['CURRENT.md', 'docs/FIXED-EXPENSES-V1.md'].map(file => `### ${file}\n` + fs.readFileSync(path.join(repo, file), 'utf8')).join('\n\n'), generate: generateAntigravity,
+          readCompletionSource: () => readCompletionSource({ report, sheets: api.sheets, home }),
           post: async text => {
             // Existing URL is read, never modified. One-way webhook sending is opt-in only after approval.
             const response = await fetch(report.webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json; charset=UTF-8' }, body: JSON.stringify({ text: `[AIBoot 대화]\n${text}` }), signal: AbortSignal.timeout(20000) });

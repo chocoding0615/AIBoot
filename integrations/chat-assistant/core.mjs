@@ -1,4 +1,8 @@
 import crypto from 'node:crypto';
+import { handleCompletion, completedAction } from './completion.mjs';
+
+// Application context budget; the prompt is carried by stdin, not the Windows command line.
+export const PROMPT_MAX = 64000;
 
 export const hash = value => crypto.createHash('sha256').update(value).digest('hex').slice(0, 24);
 export const kst = now => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(now);
@@ -109,12 +113,12 @@ export function prompt(question, snapshot, state, policy) {
     'JSON만 출력: {"factIds":["이번 원본의 ID"],"advice":""}. advice는 ' + JSON.stringify(ADVICE) + ' 중 하나만 선택한다. 자유 서술로 새로운 사실이나 미납/미처리/누락/완료 판정을 만들지 않는다. 원본에 없는 날짜/수치는 금지.'].join('\n\n');
   const payload = { question, recentMessages: state.messages.map(m => ({ ...m, text: m.text.slice(0, 500), truncated: m.text.length > 500 })), historicalContextOnly: [...state.context], fresh: snapshot };
   const serialize = () => instructions + '\n\n' + JSON.stringify(payload);
-  while (serialize().length > 28000 && payload.historicalContextOnly.length) payload.historicalContextOnly.shift();
-  while (serialize().length > 28000 && snapshot.facts.length) {
+  while (serialize().length > PROMPT_MAX && payload.historicalContextOnly.length) payload.historicalContextOnly.shift();
+  while (serialize().length > PROMPT_MAX && snapshot.facts.length) {
     const removed = snapshot.facts.pop();
     snapshot.sources[removed.source] = '일부 조회/프롬프트 한도로 일부 근거 제외';
   }
-  if (serialize().length > 28000) throw new Error('질문/운영 기준 길이 초과 — 축약 필요');
+  if (serialize().length > PROMPT_MAX) throw aiFailure('AI_INPUT_LIMIT');
   return serialize();
 }
 
@@ -123,7 +127,7 @@ const normal = s => String(s).replace(/[^a-z0-9가-힣]/gi, '').toLowerCase();
 export function proposals(snapshot, reports, state, now) {
   if (!reports.verified) return { candidates: [], status: '확인 불가: 발송된 정기 보고 추천을 읽지 못해 후보 생성 보류' };
   const candidates = [];
-  const facts = snapshot.facts.filter(f => snapshot.sources[f.source] === '연결');
+  const facts = snapshot.facts.filter(f => snapshot.sources[f.source] === '연결' && !completedAction(f, state.completionHistory));
   for (let i = 0; i < facts.length; i++) for (let j = i + 1; j < facts.length; j++) {
     const a = facts[i], b = facts[j];
     if (a.source === b.source) continue;
@@ -149,8 +153,11 @@ export async function answerPending(state, c, io) {
   if (blocked()) return { status: '정기 보고 보호: 대화 처리 대기' };
   const q = Object.values(state.questions).find(q => q.status === 'pending');
   if (!q) return { status: '대기 질문 없음' };
+  const completion = await handleCompletion(state, q, c, io);
   const sources = selectSources(q.text, state.messages);
-  if (!sources.length) {
+  if (completion !== null) {
+    q.answer = completion;
+  } else if (!sources.length) {
     q.answer = '어떤 업무를 확인할까요? 고정비·계약서·라이센스·복지·정기 업무·지정 스페이스 중 대상을 알려 주세요.';
   } else {
     const date = kst(now).slice(0, 10);

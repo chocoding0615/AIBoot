@@ -114,16 +114,16 @@ test('store refuses concurrent worker and corrupted state; restores interrupted 
 });
 test('bounded prompt labels old context and incomplete fresh evidence, keeps current policy', () => {
   const state = initialState(); state.context = Array.from({ length: 10 }, () => ({at: now.toISOString(), facts: 'old'.repeat(2000)}));
-  const data = { sources: {chat: '연결'}, facts: Array.from({length: 50}, (_, i) => ({id: String(i), source: 'chat', text: '현재 자료'.repeat(300)})) };
+  const data = { sources: {chat: '연결'}, facts: Array.from({length: 100}, (_, i) => ({id: String(i), source: 'chat', text: '현재 자료'.repeat(300)})) };
   const text = prompt('공지 알려줘', data, state, 'CURRENT POLICY');
-  assert.ok(text.length <= 28000); assert.match(text, /CURRENT POLICY/); assert.match(text, /일부 근거 제외/);
+  assert.ok(text.length <= 64000); assert.match(text, /CURRENT POLICY/); assert.match(text, /일부 근거 제외/);
 });
 test('Antigravity adapter uses isolated cwd, no shell, data-only settings and no repeated calls', async () => {
   let calls = 0, cwd;
   const launch = (file, args, options) => {
-    calls++; cwd = options.cwd; assert.equal(options.shell, false); assert.ok(!args.includes('--mode')); assert.ok(args.includes('--disable-slash-commands')); assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { useG1Credits: false, agentMode: '', toolPermission: 'strict' }); assert.equal(args[args.indexOf('--output-format') + 1], 'json'); assert.deepEqual(JSON.parse(args[args.indexOf('--json-schema') + 1]).required, ['factIds', 'advice']);
-    const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
-    queueMicrotask(() => { child.stdout.write(JSON.stringify({ status: 'SUCCESS', structured_output: { factIds: [], advice: '' } })); child.emit('close', 0); });
+    calls++; cwd = options.cwd; assert.equal(options.shell, false); assert.ok(!args.includes('--mode')); assert.ok(args.includes('--disable-slash-commands')); assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { useG1Credits: false, agentMode: '', toolPermission: 'strict' }); assert.equal(args[args.indexOf('--output-format') + 1], 'stream-json'); assert.deepEqual(JSON.parse(args[args.indexOf('--json-schema') + 1]).required, ['factIds', 'advice']);
+    const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
+    queueMicrotask(() => { child.stdout.write(JSON.stringify({ event: 'result', result: { status: 'SUCCESS', structured_output: { factIds: [], advice: '' } } })); child.emit('close', 0); });
     return child;
   };
   assert.match(await generateAntigravity('fixture', () => false, {launch, executable: 'fake'}), /factIds/);
@@ -156,7 +156,7 @@ test('cross-source candidate flow uses fresh parsed dates and never invokes AI o
 test('active generation is interrupted when the report guard becomes active', async () => {
   let checks = 0, killed = false;
   const launch = () => {
-    const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {killed = true;}; return child;
+    const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {killed = true;}; return child;
   };
   await assert.rejects(generateAntigravity('fixture', () => ++checks > 1, {launch, executable: 'fake'}));
   assert.equal(killed, true);
@@ -168,9 +168,9 @@ test('Antigravity adapter ignores token-truncated prose and accepts only structu
   let calls = 0;
   const launch = () => {
     calls++;
-    const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
+    const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
     queueMicrotask(() => {
-      const output = JSON.stringify({ status: 'SUCCESS', response: 'Non-JSON partial output before internal continuation', structured_output: value });
+      const output = JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: 'Non-JSON partial output before internal continuation', structured_output: value } });
       child.stdout.write(output.slice(0, 25)); child.stdout.write(output.slice(25)); child.emit('close', 0);
     });
     return child;
@@ -182,16 +182,16 @@ test('Antigravity adapter ignores token-truncated prose and accepts only structu
 test('Antigravity adapter rejects missing schema output, non-success status and malformed schema without fallback', async () => {
   const good = { factIds: [], advice: '' };
   const cases = [
-    JSON.stringify({ status: 'SUCCESS', response: JSON.stringify(good) }),
-    JSON.stringify({ status: 'ERROR', structured_output: good }),
-    JSON.stringify({ status: 'SUCCESS', structured_output: { factIds: [3], advice: '' } }),
-    JSON.stringify({ status: 'SUCCESS', structured_output: { factIds: [], advice: 'unsupported advice' } }),
-    JSON.stringify({ status: 'SUCCESS', structured_output: { ...good, extra: true } }),
+    JSON.stringify({event:'result',result:{ status: 'SUCCESS', response: JSON.stringify(good) }}),
+    JSON.stringify({event:'result',result:{ status: 'ERROR', structured_output: good }}),
+    JSON.stringify({event:'result',result:{ status: 'SUCCESS', structured_output: { factIds: [3], advice: '' } }}),
+    JSON.stringify({event:'result',result:{ status: 'SUCCESS', structured_output: { factIds: [], advice: 'unsupported advice' } }}),
+    JSON.stringify({event:'result',result:{ status: 'SUCCESS', structured_output: { ...good, extra: true } }}),
     JSON.stringify(good), 'partial prose' + JSON.stringify(good)
   ];
   for (const output of cases) {
     const launch = () => {
-      const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
+      const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => {};
       queueMicrotask(() => { child.stdout.write(output); child.emit('close', 0); });
       return child;
     };

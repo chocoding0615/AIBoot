@@ -11,12 +11,14 @@ import { generateAntigravity } from '../cli.mjs';
 import { ADVICE, validateAnswer, renderAnswer, answerPending, initialState, fact, aiFailure } from '../core.mjs';
 
 const good = { factIds: [], advice: '' };
-const envelope = (value = good, extra = {}) => JSON.stringify({ status: 'SUCCESS', structured_output: value, ...extra });
+const terminal = result => JSON.stringify({ event: 'result', result });
+const envelope = (value = good, extra = {}) => terminal({ status: 'SUCCESS', structured_output: value, ...extra });
 const launchFixture = ({ output = envelope(), stderr = '', exitCode = 0, signal = null, chunks, inspect, neverClose = false, killThrows = false } = {}) => {
   const state = { calls: 0, killed: 0 };
   state.launch = (file, args, options) => {
     state.calls++; state.cwd = options.cwd; state.args = args;
-    const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    child.stdin.on('data', chunk => { state.input = (state.input || '') + chunk.toString('utf8'); });
     state.child = child;
     child.kill = () => { state.killed++; if (killThrows) throw Error('private secret'); };
     inspect?.(file, args, options);
@@ -40,7 +42,9 @@ test('wire schema uses supported object/array/string/required subset; empty advi
   const f = launchFixture({ inspect: (file, args, options) => {
     assert.equal(options.shell, false); assert.equal(options.windowsHide, true);
     assert.deepEqual(JSON.parse(args[args.indexOf('--settings') + 1]), { useG1Credits: false, agentMode: '', toolPermission: 'strict' });
-    assert.equal(args[args.indexOf('--output-format') + 1], 'json');
+    assert.equal(args[args.indexOf('--output-format') + 1], 'stream-json');
+    assert.equal(args[args.indexOf('--input-format') + 1], 'stream-json');
+    assert.ok(!args.includes('-p')); assert.deepEqual(options.stdio, ['pipe', 'pipe', 'pipe']);
     assert.ok(!args.includes('--mode')); assert.ok(args.includes('--disable-slash-commands'));
     assert.equal(args[args.indexOf('--print-timeout') + 1], '540s');
     const schema = JSON.parse(args[args.indexOf('--json-schema') + 1]);
@@ -82,7 +86,7 @@ test('regression: final structured result is independent of prior token-truncate
 });
 
 test('regression: advice.enum[0] HTTP 400 exit 3 is schema error, never quota or evidence error', async () => {
-  const f = launchFixture({ exitCode: 3, output: JSON.stringify({ status: 'ERROR', error: 'INVALID_ARGUMENT (code 400): parameters.properties[advice].enum[0]: cannot be empty; private secret' }) });
+  const f = launchFixture({ exitCode: 3, output: terminal({ status: 'ERROR', error: 'INVALID_ARGUMENT (code 400): parameters.properties[advice].enum[0]: cannot be empty; private secret' }) });
   await rejects(run(f), 'AI_REQUEST_SCHEMA', 3); assert.equal(f.calls, 1);
 });
 
@@ -94,7 +98,7 @@ for (const [name, text, code] of [
   ['auth', 'UNAUTHENTICATED authentication required', 'AI_AUTH_ERROR'],
   ['generic', 'internal execution failure', 'AI_EXIT_ERROR']
 ]) test(`terminal ${name} failure has safe distinct code and no retry`, async () => {
-  const f = launchFixture({ exitCode: 3, output: JSON.stringify({ status: 'ERROR', error: text + ' private secret' }) });
+  const f = launchFixture({ exitCode: 3, output: terminal({ status: 'ERROR', error: text + ' private secret' }) });
   await rejects(run(f), code, 3); assert.equal(f.calls, 1); assert.equal(fs.existsSync(f.cwd), false);
 });
 
@@ -104,9 +108,9 @@ test('successful structured output ignores ordinary stderr quota refresh message
 
 test('malformed or incomplete JSON envelopes never fall back to response text', async () => {
   for (const output of ['', '{', '```json\n{}\n```', JSON.stringify(good), 'null', '[]', '1',
-    JSON.stringify({ status: 'SUCCESS', response: JSON.stringify(good) }),
-    JSON.stringify({ status: 'SUCCESS', structured_output: null }),
-    JSON.stringify({ status: 'SUCCESS', structured_output: { factIds: [], advice: false } })]) {
+    terminal({ status: 'SUCCESS', response: JSON.stringify(good) }),
+    terminal({ status: 'SUCCESS', structured_output: null }),
+    terminal({ status: 'SUCCESS', structured_output: { factIds: [], advice: false } })]) {
     const f = launchFixture({ output }); await assert.rejects(async () => validateAnswer(JSON.parse(await run(f)))); assert.equal(f.calls, 1);
   }
   for (const status of ['ERROR', 'CANCELED', 'INTERRUPTED', 'INVALID', 'WAITING', 'RUNNING']) {
@@ -134,12 +138,16 @@ test('signal termination preserves only safe signal and no synthetic success', a
   await assert.rejects(run(f), e => { assert.equal(e.code, 'AI_EXIT_ERROR'); assert.equal(e.signal, 'SIGTERM'); return true; });
 });
 
-test('input/protection failure never launches and Windows quoted argument overflow is rejected', async () => {
+test('input/protection failure never launches; bounded long input uses stdin without Windows argv overflow', async () => {
   const f = launchFixture(); await rejects(run(f, () => true), 'AI_REPORT_PROTECTION');
-  await rejects(run(f, () => false, 'x'.repeat(30001)), 'AI_INPUT_LIMIT');
+  await rejects(run(f, () => false, 'x'.repeat(64001)), 'AI_INPUT_LIMIT');
   await rejects(run(f, () => { throw Error('private secret'); }), 'AI_REPORT_PROTECTION');
-  if (process.platform === 'win32') await rejects(run(f, () => false, '"'.repeat(20000)), 'AI_INPUT_LIMIT');
   assert.equal(f.calls, 0);
+  const long = ('한글"\\\n').repeat(7000), ok = launchFixture();
+  await run(ok, () => false, long);
+  assert.ok(long.length > 32767); assert.ok(!ok.args.includes(long));
+  assert.deepEqual(JSON.parse(ok.input), {event: 'user', message: {content: long}});
+  assert.equal(ok.input.trim().split('\n').length, 1); assert.ok(ok.child.stdin.writableEnded);
 });
 
 test('local wall timeout kills worker and ignores late success', async t => {
@@ -192,7 +200,7 @@ test('regression: already-corrupted question-mark advice is rejected instead of 
 });
 
 test('stdout/stderr read errors settle once without exposing raw exceptions', async () => {
-  for (const stream of ['stdout', 'stderr']) {
+  for (const stream of ['stdin', 'stdout', 'stderr']) {
     const f = launchFixture({neverClose: true}), p = run(f);
     f.child[stream].emit('error', Error('private secret'));
     await rejects(p, 'AI_EXIT_ERROR'); assert.equal(f.killed, 1);
@@ -204,7 +212,7 @@ test('real offline child process confirms UTF-8 pipes and JSON envelope ingestio
   let calls = 0;
   const launch = (file, args, options) => {
     calls++;
-    return spawn(process.execPath, ['-e', 'process.stdout.write(' + JSON.stringify(envelope(value)) + ')'], options);
+    return spawn(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end",()=>process.stdout.write(' + JSON.stringify(envelope(value)) + '))'], options);
   };
   assert.deepEqual(JSON.parse(await generateAntigravity('synthetic offline process', () => false, {launch})), value);
   assert.equal(calls, 1);
@@ -216,8 +224,8 @@ test('real offline exit-3 schema error survives store restart without blocking u
   let store = openStore(dir), calls = 0;
   const now = new Date('2026-11-16T03:00:00Z');
   store.state.questions.q = {id:'q',text:'계약서 확인',status:'pending'};store.save();
-  const output = JSON.stringify({status:'ERROR',error:'INVALID_ARGUMENT (400): advice.enum[0]: cannot be empty; private secret'});
-  const launch = (file, args, options) => { calls++; return spawn(process.execPath, ['-e', 'process.stdout.write(' + JSON.stringify(output) + '); process.exitCode=3;'], options); };
+  const output = terminal({status:'ERROR',error:'INVALID_ARGUMENT (400): advice.enum[0]: cannot be empty; private secret'});
+  const launch = (file, args, options) => { calls++; return spawn(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end",()=>{process.stdout.write(' + JSON.stringify(output) + '); process.exitCode=3;});'], options); };
   try {
     await answerPending(store.state, {maxDailyCalls:null}, {now:()=>now,reportLedger:()=>({}),save:store.save,policy:'',readSources:async()=>({sources:{contracts:'연결'},facts:[]}),generate:(p,b)=>generateAntigravity(p,b,{launch})});
   } finally {store.close();}
@@ -236,4 +244,25 @@ test('successful explicitly retried preview clears obsolete failure diagnostics'
   state.questions.q={id:'q',text:'계약 확인',status:'pending',error:'old',failure:{type:'AI_EXIT_ERROR'}};
   await answerPending(state,{maxDailyCalls:null},{now:()=>now,reportLedger:()=>({}),save:()=>{},policy:'',readSources:async()=>({sources:{contracts:'연결'},facts:[]}),generate:async()=>JSON.stringify(good)});
   assert.equal(state.questions.q.status,'preview');assert.equal(state.questions.q.error,undefined);assert.equal(state.questions.q.failure,undefined);
+});
+
+test('stream progress can exceed old total cap, final result remains bounded and unique', async()=>{
+  const progress=JSON.stringify({event:'step_update',step_update:{text_delta:'가'.repeat(1000)}})+'\n';
+  const f=launchFixture({output:JSON.stringify({event:'init',init:{}})+'\n'+progress.repeat(50)+envelope()+'\n'});
+  assert.deepEqual(JSON.parse(await run(f)),good);
+  for(const output of [envelope()+'\n'+envelope(),envelope()+'\n'+progress,
+    JSON.stringify({event:'result',result:null})+'\n'+envelope(),JSON.stringify({event:'init',init:{}})+'\n']) {
+    await rejects(run(launchFixture({output})),'AI_OUTPUT_JSON',0);
+  }
+});
+
+test('real offline child verifies >32767 Korean prompt over UTF-8 stdin and EOF, not argv',async()=>{
+  const text='한글 업무 규칙\\"\n'.repeat(4000);
+  const launch=(file,args,options)=>{
+    assert.ok(!args.includes(text));
+    const code=`let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>{const x=JSON.parse(input);if(x.event!=='user'||x.message.content.length!==${text.length}||x.message.content[0]!=='한')process.exit(2);process.stdout.write(${JSON.stringify(envelope())});});`;
+    return spawn(process.execPath,['-e',code],options);
+  };
+  assert.ok(text.length>32767);
+  assert.deepEqual(JSON.parse(await generateAntigravity(text,()=>false,{launch})),good);
 });
