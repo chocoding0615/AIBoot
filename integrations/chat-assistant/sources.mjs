@@ -2,15 +2,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
+import { createOfficialReader, CONTRACT_RANGES } from '../shared/official-sources.mjs';
 import { fact, kst } from './core.mjs';
 import { readRecurringSource, recurringLines, loadHolidays, makeCalendar } from '../local-dual-report/recurring.mjs';
-import { parseContracts, parseLicenses, parseVehicles, parseWelfare } from '../../tools/fixed-expense-flow/domains.mjs';
+import { parseContractDb, parseLicenses, parseVehicles, parseWelfare } from '../../tools/fixed-expense-flow/domains.mjs';
 import { completionTargets, filterCompletedRecurring } from './completion.mjs';
 
 export async function readCompletionSource({ report, sheets, home, now = new Date(), fetcher = fetch }) {
   if (!report.recurringSpreadsheetId) throw new Error('정기 업무 미설정');
   const today = kst(now).slice(0, 10);
-  const source = await readRecurringSource(sheets(), report.recurringSpreadsheetId);
+  const source = await readRecurringSource(createOfficialReader(sheets(), report), report.recurringSpreadsheetId);
   const holidays = await loadHolidays({ file: path.join(home, 'holidays.json'), today, save: false, fetcher });
   return { source, today, cal: makeCalendar(holidays, report), scope: fact('recurring', report.recurringSpreadsheetId, '', '').id };
 }
@@ -45,11 +46,13 @@ export function clients(report, home) {
 
 /** Strictly reads only existing connected resources. Each failed category remains explicitly unavailable. */
 export async function readSources(ids, { report, chat, sheets, rules, home, now = new Date(), fetcher = fetch, completionHistory = {} }) {
+  let sourceApi;
+  const sheetsRead = () => sourceApi ||= createOfficialReader(sheets(), report);
   const date = kst(now).slice(0, 10), facts = [], sources = {};
   const add = (source, key, subject, text, extra) => facts.push(fact(source, key, subject, text, extra));
   const batch = async (spreadsheetId, ranges) => {
     if (!spreadsheetId) throw new Error('미설정');
-    const result = await sheets().values.batchGet({ spreadsheetId, ranges });
+    const result = await sheetsRead().values.batchGet({ spreadsheetId, ranges });
     return result.data.valueRanges.map(r => r.values || []);
   };
   for (const source of [...new Set(ids)]) {
@@ -57,7 +60,7 @@ export async function readSources(ids, { report, chat, sheets, rules, home, now 
     try {
       if (source === 'fixed') {
         if (!report.spreadsheetId) throw new Error('미설정');
-        const r = await sheets().get({ spreadsheetId: report.spreadsheetId, ranges: ["'JP매월 지출'!B1:V37"], includeGridData: true,
+        const r = await sheetsRead().get({ spreadsheetId: report.spreadsheetId, ranges: ["'JP매월 지출'!B1:V37"], includeGridData: true,
           fields: 'sheets(data(rowData(values(formattedValue,effectiveFormat(backgroundColor)))))' });
         const jp = (r.data.sheets[0].data[0].rowData || []).map(row => (row.values || []).map(v => {
           const bg = v.effectiveFormat?.backgroundColor;
@@ -70,14 +73,14 @@ export async function readSources(ids, { report, chat, sheets, rules, home, now 
         }
         for (const item of calculated.sched.filter(s => !s.day)) add(source, `${item.vendor}|unknown`, item.vendor, `${item.vendor}: 회차 미확정 — 구체 근거 없이 미납/미처리 판정 금지`);
       } else if (source === 'contracts' || source === 'licenses') {
-        const range = source === 'contracts' ? "'계약서 검색'!A6:N200" : "'프로그램(2026)'!A5:D60";
-        const [values] = await batch(report.contractsSpreadsheetId, [range]);
-        const parsed = source === 'contracts' ? parseContracts(values) : parseLicenses(values);
+        const ranges = source === 'contracts' ? CONTRACT_RANGES : ["'프로그램(2026)'!A5:D60"];
+        const values = await batch(report.contractsSpreadsheetId, ranges);
+        const parsed = source === 'contracts' ? parseContractDb(values) : parseLicenses(values[0]);
         for (const row of parsed.rows) {
           const end = row.end;
           if (!/^\d{4}-\d{2}-\d{2}$/.test(end) || new Date(end).toISOString().slice(0, 10) !== end) continue;
           const d = rules.daysBetween(date, end), bucket = rules.bucketOf(d);
-          if (bucket) add(source, `${row.row}|${end}`, row.name, `${row.name}: ${row.what || ''} 종료 ${end}, ${bucket} (D-${d})${row.autoRenew ? ', 자동연장 표시' : ''}`, { date: end });
+          if (bucket) add(source, `${row.row}|${end}`, row.name, `${row.name}: ${row.what || ''} 종료 ${end}, ${bucket} (D-${d})${row.autoRenew ? ', 자동연장 표시' : ''}${row.categoryStatus ? ', 분류: ' + (row.category || '확인 필요') : ''}`, { date: end, ...(source === 'contracts' ? {category: row.category, categoryStatus: row.categoryStatus, vehicleInsurance: row.vehicleInsurance} : {}) });
         }
         if (source === 'contracts') {
           const columns = await batch(report.contractsSpreadsheetId, ["'계약서(DB)'!C5:C300", "'계약서(DB)'!E5:E300", "'계약서(DB)'!I5:I300", "'계약서(DB)'!Q5:Q300"]);
@@ -91,7 +94,9 @@ export async function readSources(ids, { report, chat, sheets, rules, home, now 
         }
       } else if (source === 'recurring') {
         if (!report.recurringSpreadsheetId) throw new Error('미설정');
-        const data = await readCompletionSource({ report, sheets, home, now, fetcher });
+        const data = await readCompletionSource({ report, sheets: sheetsRead, home, now, fetcher });
+        if (data.source.historyState === '조회 실패') sources.recurring_history = '확인 필요 — 처리이력 조회 실패 또는 미승인';
+        if (data.source.registered === null) sources.recurring_registration = '확인 필요 — Master_Sheet 점검 불가';
         const targets = completionTargets(data.source, data.cal, date, data.scope);
         const lines = recurringLines(data.source, data.cal, date);
         filterCompletedRecurring(lines, targets, completionHistory).forEach(({text, target}, i) => {
@@ -115,8 +120,9 @@ export async function readSources(ids, { report, chat, sheets, rules, home, now 
         }
       } else throw new Error('허용되지 않은 자료');
       sources[source] = '연결';
-    } catch {
-      facts.splice(start); sources[source] = '조회 실패 또는 미설정';
+    } catch (error) {
+      const code = typeof error?.code === 'string' && /^SOURCE_[A-Z_]+$/.test(error.code) ? error.code : 'SOURCE_READ_FAILED';
+      facts.splice(start); sources[source] = '조회 실패 또는 미설정 — 확인 필요 (' + code + ')';
     }
   }
   return { at: now.toISOString(), sources, facts };

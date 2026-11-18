@@ -15,11 +15,15 @@ import { generateAntigravity } from '../cli.mjs';
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const rules = fixedRules(repo), now = new Date('2026-11-16T03:00:00Z');
 const temporary = t => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aiboot-fixture-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true })); return dir; };
-const report = { spreadsheetId: 'fixed', contractsSpreadsheetId: 'contracts', opsSpreadsheetId: 'welfare', recurringSpreadsheetId: 'recurring', chatSpaces: ['reference1', 'reference2'] };
+const report = { spreadsheetId: 'fixed', contractsSpreadsheetId: 'contracts', opsSpreadsheetId: 'welfare', recurringSpreadsheetId: 'recurring', chatSpaces: ['reference1', 'reference2'], sourceSheetIds: {fixed:1,contracts:2,licenses:3,welfare:4,recurring:1,master:2} };
 function fakeSheets(calls) {
   return () => ({
     get: async args => {
       calls.push(args);
+      if (!args.ranges) {
+        const spec = {fixed:['[MS] AD_관리비 내역',[['JP매월 지출',1]]],contracts:['[MS] AD_계약서 관리',[['계약서(DB)',2],['프로그램(2026)',3]]],welfare:['[MS] AD_운영 관리',[['복지포인트 관리(2026)',4]]],recurring:['[MS] 김현호',[['업무',1],['Master_Sheet',2]]] }[args.spreadsheetId];
+        return {data:{properties:{title:spec[0]},sheets:spec[1].map(([title,sheetId])=>({properties:{title,sheetId,hidden:false}}))}};
+      }
       if (args.spreadsheetId === 'fixed') return { data: { sheets: [{ data: [{ rowData: [] }] }] } };
       if (!args.ranges) return { data: { properties: { title: '[MS] 김현호' }, sheets: [{ properties: { title: '업무', sheetId: 1 } }] } };
       return { data: { sheets: [{ data: [{ rowData: [{ values: ['준비 업무', '1회', '2026-11-20', '사용', 'D-7'].map(formattedValue => ({formattedValue})) }] }] }] } };
@@ -30,7 +34,7 @@ function fakeSheets(calls) {
         calls.push(args);
         const ranges = args.ranges;
         let data;
-        if (ranges[0].includes('계약서 검색')) data = [[['', '', '업체A', '서비스', '', '', '', '2026-11-20', '4']]];
+        if (ranges[0] === "'계약서(DB)'!C5:C") data = [[['제조사']],[['업체A']],[['서비스']],[['2026-11-20']],[['FALSE']],[['FALSE']]];
         else if (ranges[0].includes('프로그램')) data = [[['프로그램A', '', '2026-11-20', '4']]];
         else if (ranges[0].includes('복지')) data = [[['1'], ['2']], [['2026-11-20'], ['2026-11-20']]];
         else data = [[], [], [], []];
@@ -49,8 +53,8 @@ test('pure fixed calculations reuse original rules, not runner main', () => {
 });
 test('fresh selective read includes only requested source API calls, strict welfare columns and aggregate', async () => {
   const calls = []; const data = await fixtureRead(['welfare'], calls);
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].ranges, ["'복지포인트 관리(2026)'!A8:A", "'복지포인트 관리(2026)'!E8:E"]);
+  assert.equal(calls.length, 2); // one file metadata check, then the original minimal value ranges
+  assert.deepEqual(calls[1].ranges, ["'복지포인트 관리(2026)'!A8:A", "'복지포인트 관리(2026)'!E8:E"]);
   assert.equal(data.facts.length, 1); assert.match(data.facts[0].text, /2명/);
 });
 test('all supported sources use existing parsers, no write methods; reference chat separate from question cursor', async () => {
@@ -58,7 +62,7 @@ test('all supported sources use existing parsers, no write methods; reference ch
   assert.ok(Object.values(data.sources).every(s => s === '연결'));
   assert.ok(data.facts.some(f => f.source === 'recurring'));
   assert.ok(data.facts.some(f => f.source === 'chat'));
-  const vehicle = calls.find(c => c.ranges?.[0].includes('계약서(DB)'));
+  const vehicle = calls.find(c => c.ranges?.[0] === "'계약서(DB)'!C5:C300");
   assert.deepEqual(vehicle.ranges, ["'계약서(DB)'!C5:C300", "'계약서(DB)'!E5:E300", "'계약서(DB)'!I5:I300", "'계약서(DB)'!Q5:Q300"]);
   assert.equal(calls.filter(c => c.parent).length, 2);
   assert.ok(!JSON.stringify(calls).includes('건강검진')); assert.ok(!JSON.stringify(calls).includes('훈련생'));

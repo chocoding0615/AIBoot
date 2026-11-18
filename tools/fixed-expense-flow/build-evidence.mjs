@@ -15,9 +15,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { createOfficialReader, CONTRACT_RANGES } from '../../integrations/shared/official-sources.mjs';
 import { fieldPart, fixedPart, judgeFixed, parseDocRows, vendorsIn } from './judge.mjs';
 import { loadHolidays, makeCalendar, readRecurringSource } from '../../integrations/local-dual-report/recurring.mjs';
-import { judgeChat, judgeContracts, judgeLicenses, judgeRecurring, judgeWelfare, parseContracts, parseLicenses, parseVehicles, parseWelfare, unconnectedIn } from './domains.mjs';
+import { judgeChat, judgeContracts, judgeLicenses, judgeRecurring, judgeWelfare, parseContractDb, parseLicenses, parseVehicles, parseWelfare, unconnectedIn } from './domains.mjs';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const argRepo = process.argv.indexOf('--repo');
@@ -28,7 +29,7 @@ const HOME = path.join(os.homedir(), '.aiboot');
 const IMMINENT_FALLBACK = 7;
 const FIELD_TAGS = ['[계약서]', '[라이센스]', '[복지]', '[정기 업무]', '[기타 업무]'];
 // The runner's own read ranges. Each is confirmed against runner.mjs below, so a change there shows up as a warning.
-const RUNNER_RANGES = ["'계약서 검색'!A6:N200", "'프로그램(2026)'!A5:D60", "'계약서(DB)'!C5:C300", "'계약서(DB)'!E5:E300", "'계약서(DB)'!I5:I300", "'계약서(DB)'!Q5:Q300"];
+const RUNNER_RANGES = [...CONTRACT_RANGES, "'프로그램(2026)'!A5:D60", "'계약서(DB)'!C5:C300", "'계약서(DB)'!E5:E300", "'계약서(DB)'!I5:I300", "'계약서(DB)'!Q5:Q300"];
 
 const read = f => { try { return fs.readFileSync(f, 'utf8'); } catch { return null; } };
 const kstDate = (d = new Date()) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul' }).format(d);
@@ -57,7 +58,7 @@ const checks = [
   { label: '임박 창(일)', ok: !!imminentDays },
   { label: '정기 업무 원본은 [MS] 김현호 규칙표', ok: src.includes('readRecurringSource(sheets.spreadsheets, c.recurringSpreadsheetId') },
   { label: '옛 날짜형 업무 탭을 읽지 않음', ok: !src.includes("'업무'!A1:D150") },
-  ...RUNNER_RANGES.map(r => ({ label: `읽기 범위 ${r}`, ok: src.includes(r) }))
+  ...RUNNER_RANGES.map(r => ({ label: `읽기 범위 ${r}`, ok: CONTRACT_RANGES.includes(r) ? src.includes('CONTRACT_RANGES') : src.includes(r) }))
 ];
 const runnerValue = re => { try { return new Function('return ' + m(re))(); } catch { return null; } };
 const buckets = runnerValue(/const D_BUCKETS = (\[.*\]);/);
@@ -101,13 +102,15 @@ if (latest) {
 const NO_SHEET = process.argv.includes('--no-sheet');
 const conf = (() => { try { return JSON.parse(read(path.join(HOME, 'config.json'))); } catch { return null; } })();
 const errorCode = e => String(e.response?.data?.error?.status || e.code || '조회 실패').slice(0, 60);
+let officialApi;
 function sheetsApi() {
+  if (officialApi) return officialApi;
   const c = conf;
   const { google } = createRequire(path.join(c.googleAuthDir, 'package.json'))('googleapis');
   const keys = JSON.parse(read(path.join(c.googleAuthDir, 'dist/gcp-oauth.keys.json'))), k = keys.installed || keys.web;
   const auth = new google.auth.OAuth2(k.client_id, k.client_secret);
   auth.setCredentials(JSON.parse(read(path.join(c.googleAuthDir, 'dist/.gsheets-server-credentials.json'))));
-  return google.sheets({ version: 'v4', auth }).spreadsheets;
+  return officialApi = createOfficialReader(google.sheets({ version: 'v4', auth }).spreadsheets, c);
 }
 async function readSheetNames() {
   if (NO_SHEET) return null;
@@ -140,7 +143,7 @@ async function readDomains(basis) {
     } catch (e) { return { error: errorCode(e) }; }
   };
   const tab = welfareTab ? welfareTab(basis) : '';
-  const expiry = await batch(conf?.contractsSpreadsheetId, ["'계약서 검색'!A6:N200", "'프로그램(2026)'!A5:D60"], ([a, b]) => ({ contracts: parseContracts(a), licenses: parseLicenses(b) }));
+  const expiry = await batch(conf?.contractsSpreadsheetId, [...CONTRACT_RANGES, "'프로그램(2026)'!A5:D60"], values => ({ contracts: parseContractDb(values.slice(0, CONTRACT_RANGES.length)), licenses: parseLicenses(values[CONTRACT_RANGES.length]) }));
   return {
     contracts: expiry.error ? expiry : expiry.contracts,
     licenses: expiry.error ? expiry : expiry.licenses,

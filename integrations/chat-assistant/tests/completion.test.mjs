@@ -209,6 +209,7 @@ test('report loader reads atomically saved confirmation evidence without writes;
 test('existing snapshot and fact path projects only confirmed action; missing history retains original report facts',async()=>{
   const f=await reportFixture();let loaded={history:{},status:'없음'};
   const snapshot=runnerFunction('snapshot',{
+    createOfficialReader:api=>api, // source identity is tested in official-sources.test.mjs; this fixture isolates completion projection
     sheetsClient:()=>({spreadsheets:{get:async()=>({data:{sheets:[]}})}}),
     readRecurringSource:async()=>f.d.source,makeCalendar,holidayData:async()=>null,today:()=>f.d.today,
     recurringLines,readReportCompletions:()=>loaded,reportRecurring,HOME:'/synthetic',log:()=>{},
