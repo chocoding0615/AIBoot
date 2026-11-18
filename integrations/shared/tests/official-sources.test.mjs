@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import {createOfficialReader,CONTRACT_RANGES} from '../official-sources.mjs';
-import {parseContractDb,parseContracts,parseLicenses,parseVehicles,parseWelfare} from '../../../tools/fixed-expense-flow/domains.mjs';
+import {CONTRACT_CATEGORIES,parseContractDb,parseContracts,parseLicenses,parseVehicles,parseWelfare} from '../../../tools/fixed-expense-flow/domains.mjs';
 import {readSources,fixedRules} from '../../chat-assistant/sources.mjs';
-import {readRecurringSource} from '../../local-dual-report/recurring.mjs';
+import {readRecurringSource,recurringLines,makeCalendar} from '../../local-dual-report/recurring.mjs';
 const config={spreadsheetId:'fixed',contractsSpreadsheetId:'contracts',opsSpreadsheetId:'welfare',recurringSpreadsheetId:'recurring',
  sourceSheetIds:{fixed:0,daily:1,contracts:2,licenses:3,welfare:4,recurring:5,history:6,master:7}};
 const specs={
@@ -15,11 +15,11 @@ const specs={
  recurring:{title:'[MS] 김현호',tabs:[['업무',5],['반복업무_처리이력',6],['Master_Sheet',7]]}
 };
 const sample=[
- {B:true,D:'표시업체',E:'계약서비스',I:'2026-11-20',N:false,O:false},
- {B:false,D:'비노출업체',E:'별도서비스',I:'2026-12-01',N:true,O:false},
- {B:false,D:'종료업체',E:'종료서비스',I:'2026-11-20',N:false,O:true}
+ {B:true,C:'제조사',D:'표시업체',E:'계약서비스',I:'2026-11-20',N:false,O:false},
+ {B:false,C:'물류',D:'비노출업체',E:'별도서비스',I:'2026-12-01',N:true,O:false},
+ {B:false,C:'보험료',D:'종료업체',E:'종료서비스',I:'2026-11-20',N:false,O:true}
 ];
-const columns=rows=>['D','E','I','N','O'].map(c=>rows.map(r=>[r[c]]));
+const columns=rows=>['C','D','E','I','N','O'].map(c=>rows.map(r=>[r[c]]));
 function fixture({hidden=[],titleChange=null,gidChange=null,metadataFailure=false}={}) {
  const calls=[];
  const api={
@@ -45,7 +45,7 @@ function fixture({hidden=[],titleChange=null,gidChange=null,metadataFailure=fals
  return {api,calls,reader:createOfficialReader(api,config)};
 }
 const ranges=CONTRACT_RANGES;
-test('official contract DB reads D/E/I/N/O only, both B exposures included, O termination and N renewal retained',()=>{
+test('official contract DB reads C/D/E/I/N/O only, both B exposures included, O termination and N renewal retained',()=>{
  const parsed=parseContractDb(columns(sample));
  assert.deepEqual(parsed.rows.map(r=>r.name),['표시업체','비노출업체']);
  assert.deepEqual(parsed.rows.map(r=>r.autoRenew),[false,true]);
@@ -55,7 +55,7 @@ test('official contract DB reads D/E/I/N/O only, both B exposures included, O te
 });
 test('old/new projections preserve ended and expiry facts without search-screen row limit',()=>{
  const old=sample.map(r=>{const a=[];a[2]=r.D;a[3]=r.E;a[7]=r.I;a[12]=String(r.N).toUpperCase();a[13]=String(r.O).toUpperCase();return a;});
- const strip=p=>({ended:p.ended,rows:p.rows.map(({row,...r})=>r)});
+ const strip=p=>({ended:p.ended,rows:p.rows.map(({row,category,categoryStatus,vehicleInsurance,...r})=>r)});
  assert.deepEqual(strip(parseContractDb(columns(sample))),strip(parseContracts(old)));
  const many=Array.from({length:350},(_,i)=>({...sample[0],D:'업체'+i}));
  assert.equal(parseContractDb(columns(many)).rows.at(-1).row,354);
@@ -73,7 +73,7 @@ test('same file metadata reused for contracts/licenses/vehicle reads, no values 
 });
 for(const [label,options,code]of [
  ['wrong file',{titleChange:'같은 탭을 가진 다른 파일'},'SOURCE_FILE_MISMATCH'],
- ['hidden direct tab',{hidden:['계약서(DB)']},'SOURCE_TAB_HIDDEN'],
+ ['hidden tab with wrong gid',{hidden:['계약서(DB)'],gidChange:999},'SOURCE_GID_MISMATCH'],
  ['replacement gid',{gidChange:999},'SOURCE_GID_MISMATCH'],
  ['metadata failed',{metadataFailure:true},'SOURCE_METADATA_FAILED']
 ])test(label+' fails before any cell read',async()=>{
@@ -94,25 +94,27 @@ test('next-year welfare requires explicit approval; no year-based fallback',asyn
  const rules=fixedRules(new URL('../../../',import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1'));
  assert.equal(rules.welfareTab('2027-01-01'),'');
 });
-test('hidden auxiliary history and Master never read; recurring rules remain located by configured file ID',async()=>{
+test('approved hidden history and Master retain source evidence without hidden-specific requests',async()=>{
  const f=fixture({hidden:['반복업무_처리이력','Master_Sheet']});
  const source=await readRecurringSource(f.reader,'recurring');
- assert.equal(source.historyState,'조회 실패');assert.equal(source.registered,null);
- assert.equal(f.calls.filter(x=>x.method==='values.get').length,0);
+ assert.equal(source.historyState,'연결');assert.equal(source.registered,false);
+ assert.equal(f.calls.filter(x=>x.method==='values.get').length,2);
+ assert.equal(f.calls.filter(x=>x.method==='get'&&!x.ranges).length,1);
  assert.equal(f.calls.filter(x=>x.ranges?.[0]==="'업무'!A2:E200").length,1);
 });
-test('hidden daily confirmation blocked independently of unchanged JP ranges',async()=>{
+test('approved hidden daily confirmation remains readable alongside unchanged JP ranges',async()=>{
  const f=fixture({hidden:['AIBoot_데일리마감']});
  await f.reader.get({spreadsheetId:'fixed',ranges:["'JP매월 지출'!B1:V37"]});
- await assert.rejects(f.reader.values.get({spreadsheetId:'fixed',range:"'AIBoot_데일리마감'!A1:I300"}),{code:'SOURCE_TAB_HIDDEN'});
- assert.equal(f.calls.filter(x=>x.method==='values.get').length,0);
+ await f.reader.values.get({spreadsheetId:'fixed',range:"'AIBoot_데일리마감'!A1:I300"});
+ assert.equal(f.calls.filter(x=>x.method==='values.get').length,1);
+ assert.equal(f.calls.filter(x=>x.method==='get'&&!x.ranges).length,1);
 });
 test('read failure is not empty success and upstream details are not propagated',async()=>{
  const f=fixture();f.api.values.batchGet=async()=>{throw Error('private upstream identifier');};
  await assert.rejects(f.reader.values.batchGet({spreadsheetId:'contracts',ranges}),e=>e.code==='SOURCE_READ_FAILED'&&!e.message.includes('private'));
- const bad=fixture({hidden:['계약서(DB)']});
+ const bad=fixture({hidden:['계약서(DB)'],gidChange:999});
  const result=await readSources(['contracts'],{report:config,sheets:()=>bad.api,rules:{},now:new Date('2026-11-18T03:00:00Z')});
- assert.equal(result.facts.length,0);assert.match(result.sources.contracts,/확인 필요.*SOURCE_TAB_HIDDEN/);
+ assert.equal(result.facts.length,0);assert.match(result.sources.contracts,/확인 필요.*SOURCE_GID_MISMATCH/);
 });
 const runnerText=fs.readFileSync(new URL('../../local-dual-report/runner.mjs',import.meta.url),'utf8');
 const viewerText=fs.readFileSync(new URL('../../../tools/fixed-expense-flow/build-evidence.mjs',import.meta.url),'utf8');
@@ -169,4 +171,76 @@ test('missing official tab and malformed metadata do not trigger fallback or val
  const f=fixture();f.api.get=async()=>({data:{properties:{title:'[MS] AD_계약서 관리'},sheets:[]}});
  await assert.rejects(f.reader.values.batchGet({spreadsheetId:'contracts',ranges}),{code:'SOURCE_TAB_MISMATCH'});
  assert.equal(f.calls.length,0);
+});
+
+for (const category of CONTRACT_CATEGORIES) test('C category recognized without changing business fields: '+category,()=>{
+ const parsed=parseContractDb(columns([{...sample[0],C:category,N:true}])).rows[0];
+ assert.equal(parsed.category,category);assert.equal(parsed.categoryStatus,'recognized');
+ assert.equal(parsed.end,'2026-11-20');assert.equal(parsed.autoRenew,true);
+ assert.equal(parsed.vehicleInsurance,false);
+});
+test('blank/unknown C never inferred from contract text and raw category content is not exposed',()=>{
+ for(const category of ['', '새 분류 300만원 010-1234-5678']){
+  const row=parseContractDb(columns([{...sample[0],C:category,E:'차량보험 BMW 12가3456'}])).rows[0];
+  assert.equal(row.category,null);assert.equal(row.vehicleInsurance,null);
+  assert.equal(row.categoryStatus,category?'unknown':'missing');
+  assert.ok(!JSON.stringify(row).includes('300만원'));assert.ok(!JSON.stringify(row).includes('12가3456'));
+ }
+});
+test('vehicle distinction still requires C insurance plus vehicle text; insurance alone is not vehicle',()=>{
+ const data=[
+  {...sample[0],C:'보험료',E:'차량보험 BMW',I:'2026-10-01'},
+  {...sample[0],C:'보험료',E:'화재보험',I:'2026-11-20'},
+  {...sample[0],C:'물류',E:'차량보험 BMW',I:'2026-10-01'}
+ ];
+ assert.deepEqual(parseContractDb(columns(data)).rows.map(r=>r.vehicleInsurance),[true,false,false]);
+ const vehicles=parseVehicles(data.map(r=>[r.C]),data.map(r=>[r.E]),data.map(r=>[r.I]),[[],[],[]]);
+ assert.equal(vehicles.length,1);assert.equal(vehicles[0].car,'BMW');
+});
+test('approved hidden history retains completed occurrence and prevents repeat task output',async()=>{
+ const f=fixture({hidden:['반복업무_처리이력','Master_Sheet']});
+ const originalGet=f.api.get;
+ f.api.get=async args=>{
+  if(args.ranges?.[0]==="'업무'!A2:E200"){
+   f.calls.push({method:'get',...args});
+   return {data:{sheets:[{data:[{rowData:[{values:['공지 업무','1회','2026-11-18','사용','D-0'].map(formattedValue=>({formattedValue}))}],rowMetadata:[{developerMetadata:[{metadataKey:'aiboot.recurring.taskId',metadataValue:'T1'}]}]}]}]}};
+  }
+  return originalGet(args);
+ };
+ f.api.values.get=async args=>{
+  f.calls.push({method:'values.get',...args});
+  return {data:{values:args.range.includes('반복업무_처리이력')?[['업무ID','회차키','상태','처리시각','비고','회차기준일'],['T1','1회','완료','2026-11-18','견본 근거','2026-11-18']]:[['[MS] 김현호','','업무']]}};
+ };
+ const source=await readRecurringSource(f.reader,'recurring');
+ assert.equal(source.historyState,'연결');assert.equal(source.registered,true);
+ assert.deepEqual(recurringLines(source,makeCalendar({days:['2026-01-01'],names:{}}),'2026-11-18'),[]);
+ assert.equal(f.calls.filter(c=>c.method==='get'&&!c.ranges).length,1);
+});
+test('hidden daily confirmation produces the same actual report snapshot as visible evidence',async()=>{
+ const snapshots=[];
+ for(const hidden of [[],['JP매월 지출','AIBoot_데일리마감','계약서(DB)','프로그램(2026)']]){
+  const f=fixture({hidden});const original=f.api.values.get;
+  f.api.values.get=async args=>args.range.includes('AIBoot_데일리마감')?{data:{values:[['견본 업체','2026-10','완료']]} }:original(args);
+  const day=(a,b)=>(Date.parse(b)-Date.parse(a))/86400000;
+  const bucket=d=>d>=0&&d<=7?'D-7':d<=30&&d>7?'D-30':d<=60&&d>30?'D-60':null;
+  const snapshot=extract(runnerText,'snapshot',{sheetsClient:()=>({spreadsheets:f.api}),createOfficialReader,CONTRACT_RANGES,parseContractDb,stripPersonal:x=>x,daysBetween:day,bucketOf:bucket,today:()=> '2026-11-18',chatSnapshot:async()=>({status:'미연결'}),log:()=>{}});
+  snapshots.push(await snapshot({...config,opsSpreadsheetId:null,recurringSpreadsheetId:null}));
+ }
+ assert.deepEqual(JSON.parse(JSON.stringify(snapshots[0])),JSON.parse(JSON.stringify(snapshots[1])));
+ assert.ok(snapshots[1].text.includes('견본 업체 | 2026-10 | 완료'));
+});
+test('hidden visibility adds zero API calls across a complete allowed source pass',async()=>{
+ const counts=[];
+ for(const hidden of [[],Object.values(specs).flatMap(s=>s.tabs.map(t=>t[0]))]){
+  const f=fixture({hidden});let chatCalls=0;
+  const root=new URL('../../../',import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1');
+  const result=await readSources(['fixed','contracts','licenses','welfare','recurring','chat'],{
+   report:{...config,chatSpaces:['spaces/a','spaces/b']},sheets:()=>f.api,
+   chat:{spaces:{messages:{list:async()=>{chatCalls++;return {data:{messages:[]}};}}}},
+   rules:fixedRules(root),home:'/synthetic',now:new Date('2026-11-18T03:00:00Z'),fetcher:async()=>{throw Error('offline fixture');}
+  });
+  assert.equal(Object.values(result.sources).filter(s=>s==='연결').length,6);
+  counts.push({all:f.calls.length+chatCalls,meta:f.calls.filter(c=>c.method==='get'&&!c.ranges).length});
+ }
+ assert.deepEqual(counts,[{all:14,meta:4},{all:14,meta:4}]);
 });

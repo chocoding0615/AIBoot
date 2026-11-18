@@ -49,21 +49,29 @@ export function parseContracts(values) {
   return { rows, ended };
 }
 
-/** DB columns D/E/I/N/O only, starting at row 5. B exposure is deliberately not requested or filtered. */
+export const CONTRACT_CATEGORIES = Object.freeze(["제조사","향료 개발","금형 제작","물류","광고비","수수료","시설관리","복리후생","지급임차료","임차보증금","시설비","건물","토지","차량운반구","보험료"]);
+
+/** DB columns C/D/E/I/N/O only, starting at row 5. B exposure is deliberately not requested or filtered. */
 export function parseContractDb(columns) {
-  if (!Array.isArray(columns) || columns.length !== 5 || columns.some(c => !Array.isArray(c))) throw new Error('계약서 DB 응답 확인 필요');
+  if (!Array.isArray(columns) || columns.length !== 6 || columns.some(c => !Array.isArray(c))) throw new Error('계약서 DB 응답 확인 필요');
   const count = Math.max(0, ...columns.map(c => c.length));
   const projection = Array.from({length: count}, (_, i) => {
     const r = [];
-    r[2] = columns[0][i]?.[0] || '';
-    r[3] = columns[1][i]?.[0] || '';
-    r[7] = columns[2][i]?.[0] || '';
-    r[12] = String(columns[3][i]?.[0] ?? '').toUpperCase();
-    r[13] = String(columns[4][i]?.[0] ?? '').toUpperCase();
+    r[2] = columns[1][i]?.[0] || '';
+    r[3] = columns[2][i]?.[0] || '';
+    r[7] = columns[3][i]?.[0] || '';
+    r[12] = String(columns[4][i]?.[0] ?? '').toUpperCase();
+    r[13] = String(columns[5][i]?.[0] ?? '').toUpperCase();
     return r;
   });
   const parsed = parseContracts(projection);
-  parsed.rows.forEach(row => { row.row -= 1; });
+  parsed.rows.forEach(row => {
+    row.row -= 1;
+    const category = String(columns[0][row.row - 5]?.[0] ?? '').trim();
+    row.category = CONTRACT_CATEGORIES.includes(category) ? category : null;
+    row.categoryStatus = !category ? 'missing' : row.category ? 'recognized' : 'unknown';
+    row.vehicleInsurance = row.category ? row.category === '보험료' && /차량보험/.test(String(columns[2][row.row - 5]?.[0] ?? '')) : null;
+  });
   return parsed;
 }
 
@@ -183,6 +191,7 @@ function judgeExpiry(meta, tag, data, { report, sourceOk, buckets, checkedAt, to
     const label = r.bucket && r.what ? `${r.name} · ${r.what}` : r.name;
     const item = base(r.row, label, `원본 ${r.row}행`, r.d === null ? '종료일 미상' : `${md(r.end)} (${r.d < 0 ? 'D+' + -r.d : 'D-' + r.d})`,
       [['대상', label], ['종료일', r.d === null ? (r.end ? '날짜 아님' : '없음') : r.end], ...(r.autoRenew ? [['자동연장', '표시됨']] : [])], checkedAt);
+    if (r.categoryStatus) item.details.push(['분류(C열)', r.category || '분류 확인 필요'], ['차량보험 구분', r.vehicleInsurance === true ? '차량보험' : r.vehicleInsurance === false ? '차량보험 아님' : '확인 필요']);
     if (r.d === null) return { ...item, status: STATUS.unverified, report: REPORT.unknown, reason: '종료일이 날짜 형식이 아니라 기한을 판정할 수 없음' };
     if (r.d < 0) return { ...item, status: STATUS.check, report: REPORT.missing, reason: `종료일 ${r.d * -1}일 경과, 계약종료 미표시 — 실행기 D-구간 밖이라 보고되지 않음` };
     if (r.d > within) return { ...item, status: STATUS.ok, report: REPORT.excluded, reason: `D-${r.d} — 보고 구간(D-${within}) 밖` };

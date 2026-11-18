@@ -361,14 +361,14 @@ async function snapshot(c, slot = '') {
       if (cells.some(Boolean)) out.push(cells.join(' | '));
     }
   }
-  // Auxiliary confirmation is independently guarded; hidden/unapproved evidence is never treated as absent.
+  // Auxiliary confirmation is independently guarded; unapproved/unavailable evidence is never treated as absent.
   try {
     const daily = await sheets.spreadsheets.values.get({ spreadsheetId: c.spreadsheetId, range: "'AIBoot_데일리마감'!A1:I300" });
     out.push('## AIBoot_데일리마감');
     for (const row of daily.data.values || []) if (row.some(Boolean)) out.push(row.map(v => String(v || '').replace(/\s+/g, ' ').trim()).join(' | '));
     sources['사용자 확인(AIBoot_데일리마감)'] = '연결';
   } catch {
-    sources['사용자 확인(AIBoot_데일리마감)'] = '확인 필요 — 조회 실패 또는 숨김/미승인';
+    sources['사용자 확인(AIBoot_데일리마감)'] = '확인 필요 — 조회 실패 또는 미승인';
   }
   // Contracts and licenses: only items inside D-60, minimum fields (no amounts, no contact data).
   const contracts = [], licenses = [];
@@ -378,12 +378,12 @@ async function snapshot(c, slot = '') {
       // A blank end date renders D-DAY as 0 — only rows with a real end date and numeric D count.
       const dval = (end, dd) => /^\d{4}-\d{2}-\d{2}$/.test(String(end || '').trim()) && /^-?[\d,]+$/.test(String(dd || '').trim())
         ? daysBetween(today(), String(end).trim()) : NaN;
-      for (const row of parseContractDb(v.data.valueRanges.slice(0, 5).map(r => r.values || [])).rows) {
+      for (const row of parseContractDb(v.data.valueRanges.slice(0, CONTRACT_RANGES.length).map(r => r.values || [])).rows) {
         const d = dval(row.end, '0');
         if (!Number.isFinite(d) || !bucketOf(d)) continue;
-        contracts.push({ name: stripPersonal(row.name), what: stripPersonal(row.what), end: row.end, d, bucket: bucketOf(d), autoRenew: row.autoRenew });
+        contracts.push({ name: stripPersonal(row.name), what: stripPersonal(row.what), end: row.end, d, bucket: bucketOf(d), autoRenew: row.autoRenew, category: row.category, categoryStatus: row.categoryStatus, vehicleInsurance: row.vehicleInsurance });
       }
-      for (const row of v.data.valueRanges[5].values || []) {
+      for (const row of v.data.valueRanges[CONTRACT_RANGES.length].values || []) {
         if (/사용 만료/.test(row[0] || '')) break; // rows below this header are already expired
         const d = dval(row[2], row[3]);
         if (!row[0] || !Number.isFinite(d) || !bucketOf(d)) continue;
@@ -485,7 +485,7 @@ async function facts(date, c, snap) {
     : `다음 근무일 업무 (${mmdd})`;
   const { sched, imminentDays, lines: fixedLines } = fixedFacts(date, snap.jp);
   const undated = sched.filter(s => !s.day).map(s => s.vendor);
-  const byBucket = list => D_BUCKETS.map(([b]) => `${b}: ` + (list.filter(x => x.bucket === b).map(x => `${x.name}${x.what ? '(' + x.what + ')' : ''} 종료 ${x.end} D-${x.d}${x.autoRenew ? ' 자동연장' : ''}`).join(' / ') || '없음')).join('\n');
+  const byBucket = list => D_BUCKETS.map(([b]) => `${b}: ` + (list.filter(x => x.bucket === b).map(x => `${x.name}${x.what ? '(' + x.what + ')' : ''} 종료 ${x.end} D-${x.d}${x.autoRenew ? ' 자동연장' : ''}${x.categoryStatus ? x.category ? ' [분류:' + x.category + (x.vehicleInsurance ? '·차량보험' : '') + ']' : ' [분류 확인 필요]' : ''}`).join(' / ') || '없음')).join('\n');
   const text = [
     `오늘 ${date}(${['일', '월', '화', '수', '목', '금', '토'][dow]}): ${wd.ok ? '근무일' : '휴무(' + wd.reason + ')'}${wd.warning ? ' / ' + wd.warning : ''}`,
     `다음 근무일: ${next} → 마지막 대분류 제목은 정확히 "${nextHeading}"`,

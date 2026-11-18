@@ -34,7 +34,7 @@ function fakeSheets(calls) {
         calls.push(args);
         const ranges = args.ranges;
         let data;
-        if (ranges[0] === "'계약서(DB)'!D5:D") data = [[['업체A']],[['서비스']],[['2026-11-20']],[['FALSE']],[['FALSE']]];
+        if (ranges[0] === "'계약서(DB)'!C5:C") data = [[['제조사']],[['업체A']],[['서비스']],[['2026-11-20']],[['FALSE']],[['FALSE']]];
         else if (ranges[0].includes('프로그램')) data = [[['프로그램A', '', '2026-11-20', '4']]];
         else if (ranges[0].includes('복지')) data = [[['1'], ['2']], [['2026-11-20'], ['2026-11-20']]];
         else data = [[], [], [], []];

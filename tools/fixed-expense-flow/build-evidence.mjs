@@ -143,7 +143,7 @@ async function readDomains(basis) {
     } catch (e) { return { error: errorCode(e) }; }
   };
   const tab = welfareTab ? welfareTab(basis) : '';
-  const expiry = await batch(conf?.contractsSpreadsheetId, [...CONTRACT_RANGES, "'프로그램(2026)'!A5:D60"], values => ({ contracts: parseContractDb(values.slice(0, 5)), licenses: parseLicenses(values[5]) }));
+  const expiry = await batch(conf?.contractsSpreadsheetId, [...CONTRACT_RANGES, "'프로그램(2026)'!A5:D60"], values => ({ contracts: parseContractDb(values.slice(0, CONTRACT_RANGES.length)), licenses: parseLicenses(values[CONTRACT_RANGES.length]) }));
   return {
     contracts: expiry.error ? expiry : expiry.contracts,
     licenses: expiry.error ? expiry : expiry.licenses,

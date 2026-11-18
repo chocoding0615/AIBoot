@@ -80,7 +80,7 @@ export async function readSources(ids, { report, chat, sheets, rules, home, now 
           const end = row.end;
           if (!/^\d{4}-\d{2}-\d{2}$/.test(end) || new Date(end).toISOString().slice(0, 10) !== end) continue;
           const d = rules.daysBetween(date, end), bucket = rules.bucketOf(d);
-          if (bucket) add(source, `${row.row}|${end}`, row.name, `${row.name}: ${row.what || ''} 종료 ${end}, ${bucket} (D-${d})${row.autoRenew ? ', 자동연장 표시' : ''}`, { date: end });
+          if (bucket) add(source, `${row.row}|${end}`, row.name, `${row.name}: ${row.what || ''} 종료 ${end}, ${bucket} (D-${d})${row.autoRenew ? ', 자동연장 표시' : ''}${row.categoryStatus ? ', 분류: ' + (row.category || '확인 필요') : ''}`, { date: end, ...(source === 'contracts' ? {category: row.category, categoryStatus: row.categoryStatus, vehicleInsurance: row.vehicleInsurance} : {}) });
         }
         if (source === 'contracts') {
           const columns = await batch(report.contractsSpreadsheetId, ["'계약서(DB)'!C5:C300", "'계약서(DB)'!E5:E300", "'계약서(DB)'!I5:I300", "'계약서(DB)'!Q5:Q300"]);
@@ -95,7 +95,7 @@ export async function readSources(ids, { report, chat, sheets, rules, home, now 
       } else if (source === 'recurring') {
         if (!report.recurringSpreadsheetId) throw new Error('미설정');
         const data = await readCompletionSource({ report, sheets: sheetsRead, home, now, fetcher });
-        if (data.source.historyState === '조회 실패') sources.recurring_history = '확인 필요 — 처리이력 조회 실패 또는 숨김/미승인';
+        if (data.source.historyState === '조회 실패') sources.recurring_history = '확인 필요 — 처리이력 조회 실패 또는 미승인';
         if (data.source.registered === null) sources.recurring_registration = '확인 필요 — Master_Sheet 점검 불가';
         const targets = completionTargets(data.source, data.cal, date, data.scope);
         const lines = recurringLines(data.source, data.cal, date);

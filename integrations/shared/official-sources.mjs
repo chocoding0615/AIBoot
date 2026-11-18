@@ -1,4 +1,4 @@
-/** Official source identity and hidden-tab gate. One metadata read per configured file per query pass; no persistent cache or writes. */
+/** Official source identity gate; approved hidden tabs are allowed. One metadata read per configured file per query pass; no persistent cache or writes. */
 const GUARDED = Symbol('officialReader');
 const ROLES = {
   fixed: ['spreadsheetId', '[MS] AD_관리비 내역', 'JP매월 지출'],
@@ -10,10 +10,10 @@ const ROLES = {
   history: ['recurringSpreadsheetId', '[MS] 김현호', '반복업무_처리이력'],
   master: ['recurringSpreadsheetId', '[MS] 김현호', 'Master_Sheet']
 };
-export const CONTRACT_RANGES = ['D', 'E', 'I', 'N', 'O'].map(col => "'계약서(DB)'!" + col + '5:' + col);
+export const CONTRACT_RANGES = ['C', 'D', 'E', 'I', 'N', 'O'].map(col => "'계약서(DB)'!" + col + '5:' + col);
 const ALLOWED = {
   fixed: new Set(['B1:V37', 'D14:D36']), daily: new Set(['A1:I300']),
-  contracts: new Set([...['D','E','I','N','O'].map(c => c+'5:'+c), 'C5:C300','E5:E300','I5:I300','Q5:Q300']),
+  contracts: new Set([...['C','D','E','I','N','O'].map(c => c+'5:'+c), 'C5:C300','E5:E300','I5:I300','Q5:Q300']),
   licenses: new Set(['A5:D60']), welfare: new Set(['A8:A','E8:E']),
   recurring: new Set(['A2:E200']), history: new Set(['A:F']), master: new Set(['B1:D60'])
 };
@@ -29,7 +29,7 @@ export function createOfficialReader(api, config) {
     if (titles.size !== 1) throw fail('SOURCE_FILE_AMBIGUOUS');
     if (!cache.has(id)) cache.set(id, (async () => {
       let value;
-      try { value = await api.get({spreadsheetId:id, fields:'properties(title),sheets(properties(sheetId,title,hidden))'}); }
+      try { value = await api.get({spreadsheetId:id, fields:'properties(title),sheets(properties(sheetId,title))'}); }
       catch { throw fail('SOURCE_METADATA_FAILED'); }
       if (value.data?.properties?.title !== [...titles][0] || !Array.isArray(value.data?.sheets)) throw fail('SOURCE_FILE_MISMATCH');
       return value;
@@ -44,8 +44,7 @@ export function createOfficialReader(api, config) {
       const role = Object.keys(ROLES).find(k => config[ROLES[k][0]] === id && ROLES[k][2] === match[1]);
       if (!role || !ALLOWED[role].has(match[2])) throw fail('SOURCE_RANGE_NOT_ALLOWED');
       const matches = value.data.sheets.filter(s => s.properties?.title === match[1]);
-      if (matches.length !== 1 || !Number.isInteger(matches[0].properties.sheetId) || matches[0].properties.sheetId < 0 || (matches[0].properties.hidden !== undefined && typeof matches[0].properties.hidden !== 'boolean')) throw fail('SOURCE_TAB_MISMATCH');
-      if (matches[0].properties.hidden === true) throw fail('SOURCE_TAB_HIDDEN');
+      if (matches.length !== 1 || !Number.isInteger(matches[0].properties.sheetId) || matches[0].properties.sheetId < 0) throw fail('SOURCE_TAB_MISMATCH');
       const pinned = config.sourceSheetIds?.[role];
       if (!Number.isInteger(pinned) || pinned < 0) throw fail('SOURCE_GID_UNCONFIRMED');
       if (pinned !== matches[0].properties.sheetId) throw fail('SOURCE_GID_MISMATCH');
