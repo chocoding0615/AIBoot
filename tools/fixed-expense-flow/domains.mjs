@@ -49,6 +49,24 @@ export function parseContracts(values) {
   return { rows, ended };
 }
 
+/** DB columns D/E/I/N/O only, starting at row 5. B exposure is deliberately not requested or filtered. */
+export function parseContractDb(columns) {
+  if (!Array.isArray(columns) || columns.length !== 5 || columns.some(c => !Array.isArray(c))) throw new Error('계약서 DB 응답 확인 필요');
+  const count = Math.max(0, ...columns.map(c => c.length));
+  const projection = Array.from({length: count}, (_, i) => {
+    const r = [];
+    r[2] = columns[0][i]?.[0] || '';
+    r[3] = columns[1][i]?.[0] || '';
+    r[7] = columns[2][i]?.[0] || '';
+    r[12] = String(columns[3][i]?.[0] ?? '').toUpperCase();
+    r[13] = String(columns[4][i]?.[0] ?? '').toUpperCase();
+    return r;
+  });
+  const parsed = parseContracts(projection);
+  parsed.rows.forEach(row => { row.row -= 1; });
+  return parsed;
+}
+
 /** '프로그램(2026)'!A5:D60. A 이름, C 종료일만 쓴다. `사용 만료` 머리글 아래는 이미 만료된 행이다. */
 export function parseLicenses(values) {
   const rows = [];
@@ -257,7 +275,7 @@ export function judgeRecurring(source, vehicles, { report, sourceOk, checkedAt, 
       else items.push(judgeOccurrence(t, o, source, { report, checkedAt, date, index }));
     });
   }
-  const notes = [stopped ? `사용 여부 중지 ${stopped}건은 대상에서 제외` : '', source.historyState === '미생성' ? `${HISTORY_TAB} 탭 미생성 — 모든 회차가 미처리` : '', source.registered === false ? 'Master_Sheet에서 이 원본을 찾지 못함' : ''];
+  const notes = [stopped ? `사용 여부 중지 ${stopped}건은 대상에서 제외` : '', source.historyState === '미생성' ? `${HISTORY_TAB} 탭 미생성 — 모든 회차가 미처리` : '', source.registered === false ? 'Master_Sheet에서 이 원본을 찾지 못함' : source.registered === null ? 'Master_Sheet 등록 확인 필요 — 점검 불가' : ''];
   if (!vehicles || vehicles.error) items.push({ ...base(100000, '차량 보험', vehicles?.error ? `원본 조회 실패: ${vehicles.error}` : '원본을 조회하지 않음', '-', [], checkedAt),
     status: vehicles?.error ? STATUS.check : STATUS.unverified, report: REPORT.unknown, reason: '계약서(DB)를 읽지 못해 차량 보험을 판정할 수 없음' });
   else for (const v of vehicles) {

@@ -16,6 +16,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { createOfficialReader, CONTRACT_RANGES } from '../shared/official-sources.mjs';
+import { parseContractDb } from '../../tools/fixed-expense-flow/domains.mjs';
 import { HISTORY_TAB, loadHolidays, makeCalendar, readRecurringSource, recurringLines, recurringOmissions } from './recurring.mjs';
 import { retryNote, runPlan } from './operating.mjs';
 import { readReportCompletions, reportRecurring, completedRecommendations } from '../chat-assistant/completion.mjs';
@@ -132,7 +134,7 @@ const VENDOR_BILLED = new Set(['양주 전기료']);
 const billedNote = '업체 선납 후 청구 — 청구서 수신·지출결의 작성 여부 확인 필요(청구서가 아직 없다는 이유로 작성 누락·납부 지연으로 쓰지 말 것)';
 const SEP = '--------------------';
 const D_BUCKETS = [['D-7', 0, 7], ['D-30', 8, 30], ['D-60', 31, 60]];
-const welfareTab = date => `복지포인트 관리(${date.slice(0, 4)})`; // one tab per year
+const welfareTab = date => date.startsWith('2026-') ? '복지포인트 관리(2026)' : ''; // one tab per year
 const WELFARE_DAYS = 30;
 const bucketOf = d => (D_BUCKETS.find(([, lo, hi]) => d >= lo && d <= hi) || [null])[0];
 const norm = s => String(s).replace(/[\s()·]/g, '').toLowerCase();
@@ -335,16 +337,17 @@ const stripPersonal = s => String(s).replace(/01[016789]-?\d{3,4}-?\d{4}/g, '<�
 /** @return {{text:string, sources:object, contracts:object[], licenses:object[]}} */
 async function snapshot(c, slot = '') {
   const sheets = sheetsClient(c);
+  sheets.spreadsheets = createOfficialReader(sheets.spreadsheets, c);
   const sources = {};
   const r = await sheets.spreadsheets.get({
     spreadsheetId: c.spreadsheetId,
     // '고정비 대시보드' is retired; '시트내용' holds credentials and is never read.
-    ranges: ["'JP매월 지출'!B1:V37", "'AIBoot_데일리마감'!A1:I300"],
+    ranges: ["'JP매월 지출'!B1:V37"],
     includeGridData: true,
     fields: 'sheets(properties(title),data(rowData(values(formattedValue,effectiveFormat(backgroundColor)))))'
   });
   sources['고정비(JP매월 지출)'] = '연결';
-  sources['사용자 확인(AIBoot_데일리마감)'] = '연결';
+
   const isYellow = bg => bg && Math.round((bg.red || 0) * 255) === 255 && Math.round((bg.green || 0) * 255) === 242 && Math.round((bg.blue || 0) * 255) === 204;
   const out = [], jp = [];
   for (const s of r.data.sheets) {
@@ -358,20 +361,29 @@ async function snapshot(c, slot = '') {
       if (cells.some(Boolean)) out.push(cells.join(' | '));
     }
   }
+  // Auxiliary confirmation is independently guarded; hidden/unapproved evidence is never treated as absent.
+  try {
+    const daily = await sheets.spreadsheets.values.get({ spreadsheetId: c.spreadsheetId, range: "'AIBoot_데일리마감'!A1:I300" });
+    out.push('## AIBoot_데일리마감');
+    for (const row of daily.data.values || []) if (row.some(Boolean)) out.push(row.map(v => String(v || '').replace(/\s+/g, ' ').trim()).join(' | '));
+    sources['사용자 확인(AIBoot_데일리마감)'] = '연결';
+  } catch {
+    sources['사용자 확인(AIBoot_데일리마감)'] = '확인 필요 — 조회 실패 또는 숨김/미승인';
+  }
   // Contracts and licenses: only items inside D-60, minimum fields (no amounts, no contact data).
   const contracts = [], licenses = [];
   if (c.contractsSpreadsheetId) {
     try {
-      const v = await sheets.spreadsheets.values.batchGet({ spreadsheetId: c.contractsSpreadsheetId, ranges: ["'계약서 검색'!A6:N200", "'프로그램(2026)'!A5:D60"] });
+      const v = await sheets.spreadsheets.values.batchGet({ spreadsheetId: c.contractsSpreadsheetId, ranges: [...CONTRACT_RANGES, "'프로그램(2026)'!A5:D60"] });
       // A blank end date renders D-DAY as 0 — only rows with a real end date and numeric D count.
       const dval = (end, dd) => /^\d{4}-\d{2}-\d{2}$/.test(String(end || '').trim()) && /^-?[\d,]+$/.test(String(dd || '').trim())
         ? daysBetween(today(), String(end).trim()) : NaN;
-      for (const row of v.data.valueRanges[0].values || []) {
-        const d = dval(row[7], row[8]);
-        if (!row[2] || !Number.isFinite(d) || row[13] === 'TRUE' || !bucketOf(d)) continue;
-        contracts.push({ name: stripPersonal(row[2]), what: stripPersonal(row[3] || row[1] || ''), end: row[7], d, bucket: bucketOf(d), autoRenew: row[12] === 'TRUE' });
+      for (const row of parseContractDb(v.data.valueRanges.slice(0, 5).map(r => r.values || [])).rows) {
+        const d = dval(row.end, '0');
+        if (!Number.isFinite(d) || !bucketOf(d)) continue;
+        contracts.push({ name: stripPersonal(row.name), what: stripPersonal(row.what), end: row.end, d, bucket: bucketOf(d), autoRenew: row.autoRenew });
       }
-      for (const row of v.data.valueRanges[1].values || []) {
+      for (const row of v.data.valueRanges[5].values || []) {
         if (/사용 만료/.test(row[0] || '')) break; // rows below this header are already expired
         const d = dval(row[2], row[3]);
         if (!row[0] || !Number.isFinite(d) || !bucketOf(d)) continue;
@@ -418,7 +430,11 @@ async function snapshot(c, slot = '') {
       completedRecurring = projected.completed;
       if (completion.status === '조회 실패') sources['사용자 확인 완료 이력'] = '조회 실패 — 완료 제외에 사용하지 않음';
       sources['정기 업무([MS] 김현호 업무 A:E)'] = '연결';
-      if (source.historyState !== '연결') log('recurring history: ' + source.historyState);
+      if (source.historyState !== '연결') {
+        log('recurring history: ' + source.historyState);
+        sources['정기 업무 처리이력'] = '확인 필요 — ' + source.historyState;
+      }
+      if (source.registered === null) sources['정기 업무 원본 등록 확인'] = '확인 필요 — Master_Sheet 점검 불가';
       if (source.registered === false) log('recurring source not registered in Master_Sheet');
     } catch (e) {
       log('recurring tasks read failed: ' + e.message);
