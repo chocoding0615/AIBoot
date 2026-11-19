@@ -87,7 +87,7 @@ validate의 operation은 create/update/pause/resume/delete다. 생성 preview의
 
 전원 종료/요청 취소 후에는 성공 여부를 임의 판단하지 않는다. 동일 멱등성 키로 결과를 재조회하거나 재호출한다. 이미 확정된 변경은 HTTP 연결 취소로 취소되지 않는다. pending은 승인된 로컬 recover --enable-writes 절차로 이전 계획을 재적용한 후 해제한다.
 
-공통 report-execution.json lease는 정기/추가 보고의 조회·생성·발송을 보호한다. PID와 생성 자식 PID가 살아 있거나 생존 확인이 불명확하면 TTL만으로 회수하지 않는다. 죽은 소유자만 짧은 mutex 안에서 회수하고 복구 메타데이터를 남긴다. 기존 원장 키·시도 횟수·Chat 커서는 건드리지 않는다. sending 이후 죽은 추가 회차는 unknown으로 남긴다.
+공통 report-execution.json lease는 정기/추가 보고의 조회·생성·발송을 보호한다. PID와 모든 생성 자식 PID/birth를 추적하며, 자식 등록 전 생성 단계도 별도 표시한다. 부모가 이 구간에서 죽었거나 자식 종료를 증명할 수 없으면 발송/lease 해제를 차단한다. OS가 PID 없이 spawn 실패를 확정한 경우에만 해당 미등록 슬롯을 해제한다. PID와 생성 자식 PID가 살아 있거나 생존 확인이 불명확하면 TTL만으로 회수하지 않는다. 죽은 소유자만 짧은 mutex 안에서 회수하고 복구 메타데이터를 남긴다. 기존 원장 키·시도 횟수·Chat 커서는 건드리지 않는다. sending 이후 죽은 추가 회차는 unknown으로 남긴다.
 
 짧은 mutex 자체를 보유한 채 강제 종료되면 guard가 남을 수 있다. 아래 명시적 오프라인 복구 절차를 사용하며 시간만 보고 자동 삭제하지 않는다. 소유 PID 생성 시각을 기록하고, 전체 lease의 자동 회수도 현재 프로세스 트리 증명을 재확인한다. PID 재사용·생존 불명·자식 생존은 계속 차단한다. 추가 상태/추가 mutation.guard는 정기 보고가 읽지 않으므로 별도 장애 범위다. 공통 guard 잔류만 정기 보고를 안전 차단할 수 있으며, 증명 불가 상태에서는 운영 활성화를 허용하지 않는다.
 
@@ -108,7 +108,7 @@ validate의 operation은 create/update/pause/resume/delete다. 생성 preview의
 404 NOT_FOUND/RUN_NOT_FOUND.
 405 METHOD_NOT_ALLOWED, 413 BODY_TOO_LARGE, 415 JSON_REQUIRED.
 409 RECOVERY_IN_PROGRESS/LEAD_TIME/SCHEDULE_CONFLICT/VERSION_CONFLICT/IDEMPOTENCY_CONFLICT/RUN_ACTIVE/STORE_BUSY/SCHEDULE_LIMIT/RUN_NOT_RESERVED/OCCURRENCE_EXPIRED/LEASE_LOST/DELIVERY_UNCERTAIN.
-503 EXECUTION_PROTECTION_BLOCKED/STORE_CORRUPT/EXECUTION_STATE_CORRUPT/TRIGGER_MISMATCH/WINDOWS_TASK_FAILED/RECONCILIATION_REQUIRED/WINDOWS_REQUIRED/REQUEST_HISTORY_FULL/RUN_HISTORY_FULL/INTERNAL_ERROR.
+503 EXECUTION_CHILD_UNVERIFIED/LEASE_STATE_INVALID/EXECUTION_PROTECTION_BLOCKED/STORE_CORRUPT/EXECUTION_STATE_CORRUPT/TRIGGER_MISMATCH/WINDOWS_TASK_FAILED/RECONCILIATION_REQUIRED/WINDOWS_REQUIRED/REQUEST_HISTORY_FULL/RUN_HISTORY_FULL/INTERNAL_ERROR.
 
 미확인·조회 실패를 자료 없음/완료/발송 실패 확정으로 바꾸지 않는다. HTTP 오류 응답 외 네트워크 단절·메시지 ID 부재는 발송 결과 불명이며 재발송하지 않는다.
 
@@ -130,7 +130,7 @@ validate의 operation은 create/update/pause/resume/delete다. 생성 preview의
 6. sending lease와 기존 정기/추가 원장·시도 횟수·Chat 커서는 그대로 둔다. sending의 복구 결과는 unknown_preserved다. 같은 회차 재시도 허가는 아니다.
 7. pending이 남았으면 실제 추가 발송 비활성화를 확인한 뒤 별도의 recover --enable-writes로 이전 Windows/예약 계획 복구를 확인한다. inspect-locks, status와 기존 정기 보고 비발송 검증을 마친 뒤 승인된 순서로 기존 작업을 복원한다. 추가 실발송은 별도 활성화다.
 
-소유권 불명·PID 재사용·자식 생존·JSON 손상·구형 guard의 phase 부재·복구 마커 자체 잔류는 자동 복구하지 않는다. 운영 활성화를 차단하고 스냅샷/작업 XML/원장 백업을 보존한다. 모든 진입점 중지 및 프로세스/자식/발송 상태를 운영자가 증명한 별도 오프라인 검토 전 파일을 지우지 않는다. 재부팅은 프로세스를 종료할 뿐 발송 결과 불명 기록을 해소하지 않는다.
+소유권 불명·PID 재사용·자식 생존/종료 불명·미등록 생성 자식·JSON 손상·구형 guard의 phase 부재·복구 마커 자체 잔류는 자동 복구하지 않는다. 운영 활성화를 차단하고 스냅샷/작업 XML/원장 백업을 보존한다. 모든 진입점 중지 및 프로세스/자식/발송 상태를 운영자가 증명한 별도 오프라인 검토 전 파일을 지우지 않는다. 재부팅은 프로세스를 종료할 뿐 발송 결과 불명 기록을 해소하지 않는다.
 
 복구 CLI 오류: DISPATCH_MUST_BE_DISABLED(409), RECOVERY_CONFIRMATION_REQUIRED(403), MAINTENANCE_REQUIRED(409), INVALID_RECOVERY_SCOPE/RECOVERY_FINGERPRINT_REQUIRED(400), RECOVERY_IN_PROGRESS/RECOVERY_SNAPSHOT_CHANGED/OWNER_OR_CHILD_UNVERIFIED(409), RECOVERY_LAYOUT_INVALID/GUARD_REVIEW_REQUIRED/LEASE_REVIEW_REQUIRED(503). 활성화 명령은 잔류 guard·복구 마커·증명 불가 lease·자기 프로세스 신원 불명이 있으면 EXECUTION_PROTECTION_BLOCKED로 거절한다.
 

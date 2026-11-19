@@ -22,8 +22,9 @@ function leaseAt(home){
  } catch(e){if(e.status)throw e;fail('LEASE_REVIEW_REQUIRED',503);}
 }
 function evidence(record,probe){if(!record)return null;const parent=probe(record.pid),status=identityStatus(record,parent);
- const child=record.childPid?identityStatus({birth:record.childBirth},probe(record.childPid)):null;
- return {pid:record.pid,birth:record.birth??null,phase:record.phase,parentStatus:status,descendants:parent.descendants,childStatus:child,safeDead:status==='dead'&&(!child||child==='dead')};}
+ const children=(record.children|| (record.childPid?[{pid:record.childPid,birth:record.childBirth}]:[])).map(c=>({pid:c.pid,status:identityStatus(c,probe(c.pid))}));
+ const child=children[0]?.status||null,unregisteredChildren=record.unregisteredChildren||0;
+ return {pid:record.pid,birth:record.birth??null,phase:record.phase,parentStatus:status,descendants:parent.descendants,childStatus:child,children,unregisteredChildren,safeDead:status==='dead'&&unregisteredChildren===0&&children.every(c=>c.status==='dead')};}
 export function inspectGuards(home,{probe=processProof}={}){
  return {scopes:['execution','schedule'].map(scope=>{
   const dir=location(home,scope);try{const o=ownerAt(dir);return {scope,guardPresent:!!o,recoveryInProgress:fs.existsSync(dir+'.recovery'),fingerprint:o?.fingerprint??null,owner:o?evidence(o.owner,probe):null};}

@@ -698,8 +698,8 @@ function run(cmd, argv, opts, input) {
     }, AGENT_TIMEOUT_MS);
     p.stdout.on('data', d => { out += d; });
     p.stderr.on('data', d => { err += d; });
-    p.on('close', code => { clearTimeout(t); activeReportLease?.child(null); resolve({ code, out, err }); });
-    p.on('error', e => { clearTimeout(t); resolve({ code: -1, out, err: String(e) }); });
+    p.on('close', code => { clearTimeout(t); activeReportLease?.child(p.pid,true); resolve({ code, out, err }); });
+    p.on('error', e => { clearTimeout(t); if (!p.pid) activeReportLease?.noChild(); resolve({ code: -1, out, err: String(e) }); });
     if (input != null) { p.stdin.write(input); }
     p.stdin.end();
   });
@@ -881,8 +881,8 @@ async function main() {
       assertSameContent(chat, cards); // never send a card that lost or reordered a line
       if (dry) return log(`dry-run ${key} ok chat=${chat.length} chars cards=${cards.length} in ${Date.now() - t0}ms\n${msg}` +
         (args['show-cards'] ? '\n' + JSON.stringify({ text: `*${title}*`, cardsV2: cards }, null, 1) : ''));
-      record({ status: 'sending' });
       activeReportLease?.phase('sending'); currentReportPhase = 'sending';
+      record({ status: 'sending' });
       let r;
       try {
         r = await post(c.webhookUrl, { text: `*${title}*`, cardsV2: cards });
