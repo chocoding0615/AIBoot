@@ -180,3 +180,8 @@ validate의 operation은 create/update/pause/resume/delete다. 생성 preview의
 - 주말/휴일 예약의 nextRunAt은 다음 트리거 시각이다. workdayPolicy/nextRunMeaning/maySkipNonWorkday 필드를 근거로 실행 시 건너뛸 수 있음을 표시한다.
 
 구현에서 JSON Content-Type은 application/json 및 UTF-8 charset 표기를 허용한다. expectedVersion은 0 이상의 정수이며 누락/문자열은 INVALID_REQUEST(400), confirmed가 true가 아니면 CONFIRMATION_REQUIRED(400)다. 필요 없는 operation/id/rule 입력도 거절한다.
+
+
+## 2026-11-19 — 2·3단계 연결 어댑터
+
+사용자 세션·CSRF 백엔드와 GET 4종의 구현 연결은 [WORKSPACE_CONNECTION](WORKSPACE_CONNECTION.md)을 따른다. 예약 Rule/Schedule/Run과 엔드포인트·버전·멱등·confirmed·오류 기준은 이 문서가 유일한 원본이다. 브라우저에는 제어 Bearer를 주지 않는다. 새 연결 진입점은 예약 쓰기·실발송을 모두 차단하며, 기존 예약 API의 기본 권한을 완화하지 않는다. Windows 실제 반환 순서만 정규화하며 다른 요일·시각·시작일·설정 불일치는 계속 차단한다. 앞의 미검증 기록은 PR #33 시점이며 이번 검증 결과는 연결 문서의 날짜별 결과와 구분한다.
