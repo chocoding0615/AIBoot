@@ -19,9 +19,9 @@ export function validateConfig(c, report) {
 }
 
 // Includes the last retry window plus the runner's 10 minute generation timeout and scheduler tail.
-export function reportBlocked(now, ledger) {
+export function reportBlocked(now, ledger, execution = false) {
   const clock = kst(now).slice(11);
-  return (clock >= '09:00' && clock < '11:15') || (clock >= '15:30' && clock < '17:45') ||
+  return execution || (clock >= '09:00' && clock < '11:15') || (clock >= '15:30' && clock < '17:45') ||
     Object.values(ledger).some(x => ['generating', 'sending'].includes(x.status));
 }
 export function remember(state, role, text, at) {
@@ -149,7 +149,7 @@ export function proposals(snapshot, reports, state, now) {
 export async function answerPending(state, c, io) {
   const now = io.now();
   pruneContext(state, now);
-  const blocked = () => reportBlocked(io.now(), io.reportLedger());
+  const blocked = () => reportBlocked(io.now(), io.reportLedger(), io.executionBusy?.());
   if (blocked()) return { status: '정기 보고 보호: 대화 처리 대기' };
   const q = Object.values(state.questions).find(q => q.status === 'pending');
   if (!q) return { status: '대기 질문 없음' };

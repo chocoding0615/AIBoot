@@ -14,7 +14,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
+import { acquireExecution } from '../report-scheduler/execution.mjs';
+import { beginScheduled, transitionScheduled, failScheduled, artifactId } from '../report-scheduler/engine.mjs';
+let activeReportLease = null;
+let currentReportPhase = 'reading';
+const activeReportLeasePhase = () => currentReportPhase;
 import { createRequire } from 'node:module';
 import { createOfficialReader, CONTRACT_RANGES } from '../shared/official-sources.mjs';
 import { parseContractDb } from '../../tools/fixed-expense-flow/domains.mjs';
@@ -685,12 +690,16 @@ function splitReport(raw, f) {
 function run(cmd, argv, opts, input) {
   return new Promise(resolve => {
     const p = spawn(cmd, argv, { ...opts, windowsHide: true });
+    if (p.pid) activeReportLease?.child(p.pid);
     let out = '', err = '';
-    const t = setTimeout(() => { p.kill(); err += '\nTIMEOUT'; }, AGENT_TIMEOUT_MS);
+    const t = setTimeout(() => {
+      try { if (process.platform === 'win32' && p.pid) execFileSync('taskkill.exe', ['/PID', String(p.pid), '/T', '/F'], {windowsHide:true,stdio:'ignore'}); else p.kill(); } catch { p.kill(); }
+      err += '\nTIMEOUT';
+    }, AGENT_TIMEOUT_MS);
     p.stdout.on('data', d => { out += d; });
     p.stderr.on('data', d => { err += d; });
-    p.on('close', code => { clearTimeout(t); resolve({ code, out, err }); });
-    p.on('error', e => { clearTimeout(t); resolve({ code: -1, out, err: String(e) }); });
+    p.on('close', code => { clearTimeout(t); activeReportLease?.child(p.pid,true); resolve({ code, out, err }); });
+    p.on('error', e => { clearTimeout(t); if (!p.pid) activeReportLease?.noChild(); resolve({ code: -1, out, err: String(e) }); });
     if (input != null) { p.stdin.write(input); }
     p.stdin.end();
   });
@@ -798,9 +807,11 @@ async function main() {
     const s = await chatSnapshot(c, asOf, { ledger: !args['no-ledger'] });
     return log(`chat check (as of ${asOf}): ${s.status} since=${s.from || '-'} messages=${(s.counts || []).join(' ') || '-'} lines=${s.text ? s.text.split('\n').length : 0}`);
   }
-  const slot = args.slot;
+  const scheduled = args['scheduled-run'] ? beginScheduled(HOME, String(args['scheduled-run'])) : null;
+  if (args['scheduled-run'] && !scheduled) return log('extra held for regular report');
+  const slot = scheduled ? 'afternoon' : args.slot;
   if (!SLOTS[slot]) throw new Error('--slot morning|afternoon');
-  const requested = !args.agent || args.agent === 'both' ? Object.keys(AGENTS) : [args.agent];
+  const requested = scheduled ? ['antigravity'] : !args.agent || args.agent === 'both' ? Object.keys(AGENTS) : [args.agent];
   if (requested.some(a => !AGENTS[a])) throw new Error('--agent codex|antigravity|both');
   const c = cfg();
   const date = today();
@@ -810,18 +821,26 @@ async function main() {
   let agents = requested;
 
   if (!test) {
-    if (plan.skip) return log(`skip ${date} ${slot}: ${plan.skip}`);
-    agents = plan.agents;
+    if (plan.skip) { if (scheduled) transitionScheduled(HOME, scheduled.key, {status:'failed_not_sent',reason:'OPERATING_DISABLED'}); return log(`skip ${date} ${slot}: ${plan.skip}`); }
+    agents = scheduled ? ['antigravity'] : plan.agents;
     if (plan.mode !== '비교 시험') log(`${plan.mode}: ${agents.join(',')}`);
     const now = hm();
-    if (now < SLOTS[slot].start || now >= SLOTS[slot].end) return log(`skip ${date} ${slot}: 보고 시간대 밖(${now}) — PC가 꺼져 있었으면 이 회차는 발송하지 않음`);
+    if (!scheduled && (now < SLOTS[slot].start || now >= SLOTS[slot].end)) return log(`skip ${date} ${slot}: 보고 시간대 밖(${now}) — PC가 꺼져 있었으면 이 회차는 발송하지 않음`);
     const wd = await workday(date, c);
-    if (!wd.ok) return log(`skip ${date} ${slot}: ${wd.reason}`);
+    if (!wd.ok) { if (scheduled) transitionScheduled(HOME, scheduled.key, {status:'skipped_nonworkday',reason:'WORKDAY_POLICY',completedAt:new Date().toISOString()}); return log(`skip ${date} ${slot}: ${wd.reason}`); }
   }
 
+  if (scheduled && (test || dry || args['facts-only'])) throw new Error('scheduled report does not accept test/dry overrides');
+  const lease = !test && !dry && !args['facts-only'] ? acquireExecution(HOME, {kind:scheduled?'extra':'regular',key:scheduled?.key || `${date}|${slot}`}) : null;
+  if (!test && !dry && !args['facts-only'] && !lease) {
+    if (scheduled) transitionScheduled(HOME, scheduled.key, {status:'held',reason:'EXECUTION_BUSY',completedAt:new Date().toISOString()});
+    return log('report execution busy — no generation or send');
+  }
+  activeReportLease = lease; currentReportPhase = 'reading';
+  try {
   const tag = test && args.tag ? String(args.tag) : '';
   if (tag && !TEST_TAGS[tag]) throw new Error('--tag ' + Object.keys(TEST_TAGS).join('|'));
-  const snap = await snapshot(c, slot);
+  const snap = await snapshot(c, scheduled ? `extra:${scheduled.scheduleId}` : slot);
   const f = await facts(date, c, snap);
   const hash = crypto.createHash('sha256').update(snap.text + f.text).digest('hex').slice(0, 12);
   log(`snapshot ${date} ${slot} sha=${hash} chars=${snap.text.length} contracts=${snap.contracts.length} licenses=${snap.licenses.length} welfare=${snap.welfare.length} recurring=${snap.recurring.length}`);
@@ -833,30 +852,37 @@ async function main() {
 
   await Promise.all(agents.map(async agent => {
     // Test sends are tracked separately from regular runs: `|test` or `|test:<tag>`.
-    const key = `${date}|${slot}|${agent}${test ? '|test' + (tag ? ':' + tag : '') : ''}`;
+    const key = scheduled ? scheduled.key : `${date}|${slot}|${agent}${test ? '|test' + (tag ? ':' + tag : '') : ''}`;
     // Read before claim(): claiming replaces the entry. Only a validation failure is passed on, nothing else.
-    const note = retryNote(readLedger()[key]);
-    const claimed = dry ? true : claim(key);
+    const note = scheduled ? '' : retryNote(readLedger()[key]);
+    const claimed = scheduled ? true : dry ? true : claim(key);
     if (claimed !== true) return log(`skip ${key}: ledger=${claimed}`);
+    const record = patch => {
+      if (!scheduled) return updateLedger(key, patch);
+      const status = patch.status === 'failed' ? 'failed_not_sent' : patch.status === 'sending' && patch.error ? 'unknown' : patch.status;
+      return transitionScheduled(HOME, key, {status, ...(status === 'failed_not_sent' && patch.confirmedNoDelivery === true ? {confirmedNoDelivery:true} : {}), ...(status === 'sent' ? {webhookAcceptedAt:new Date().toISOString(),completedAt:new Date().toISOString(),receiptEvidencePresent:!!patch.messageId} : {}), ...(patch.error ? {reason:'REPORT_FAILED',completedAt:new Date().toISOString()} : {})});
+    };
     const t0 = Date.now();
     try {
       // --from-report re-sends a saved answer without calling the agent (dry-run or test only; still fully validated).
+      activeReportLease?.phase('generating'); currentReportPhase = 'generating';
       const raw = (dry || test) && args['from-report'] ? fs.readFileSync(path.join(REPORT_DIR, `${date}-${slot}-${agent}-${args['from-report']}.md`), 'utf8')
         : await generate(agent, note ? text + '\n\n' + note : text);
       if (/chat\.googleapis\.com|key=AIza|token=/.test(raw)) throw new Error('output contains secret-like text; not sent');
       // Full analysis stays on this PC only (internal record); Chat gets the validated short part.
       fs.mkdirSync(REPORT_DIR, { recursive: true });
-      if (!args['from-report']) fs.writeFileSync(path.join(REPORT_DIR, `${date}-${slot}-${agent}${test ? '-test' + (tag ? '-' + tag : '') : ''}${dry ? '-preview' : ''}.md`),
+      if (!args['from-report']) fs.writeFileSync(path.join(REPORT_DIR, `${scheduled ? 'extra-' + artifactId(key) : date+'-'+slot+'-'+agent}${test ? '-test' + (tag ? '-' + tag : '') : ''}${dry ? '-preview' : ''}.md`),
         `snapshot ${hash}\n\n${raw}\n`);
       const { chat } = splitReport(raw, f);
-      const title = `${AGENTS[agent]} ${tag ? '[' + TEST_TAGS[tag](date) + '] ' : test ? '[테스트] ' : ''}[AIBoot] ${SLOTS[slot].label} (${date.slice(5).replace('-', '/')})`;
+      const title = `${scheduled ? '[추가 예약 ' + scheduled.scheduledAt + ' ] ' : ''}${AGENTS[agent]} ${tag ? '[' + TEST_TAGS[tag](date) + '] ' : test ? '[테스트] ' : ''}[AIBoot] ${scheduled ? '추가 예약 업무보고' : SLOTS[slot].label} (${date.slice(5).replace('-', '/')})`;
       const footer = `확인 불가(미연결): ${unconnected.join(' · ')}`;
       const msg = `*${title}*\n${chat}\n\n_${footer}_`;
       const cards = toCards(chat, title, footer);
       assertSameContent(chat, cards); // never send a card that lost or reordered a line
       if (dry) return log(`dry-run ${key} ok chat=${chat.length} chars cards=${cards.length} in ${Date.now() - t0}ms\n${msg}` +
         (args['show-cards'] ? '\n' + JSON.stringify({ text: `*${title}*`, cardsV2: cards }, null, 1) : ''));
-      updateLedger(key, { status: 'sending' });
+      activeReportLease?.phase('sending'); currentReportPhase = 'sending';
+      record({ status: 'sending' });
       let r;
       try {
         r = await post(c.webhookUrl, { text: `*${title}*`, cardsV2: cards });
@@ -866,16 +892,23 @@ async function main() {
         log(`cards rejected for ${key}; sending text fallback`);
         r = await post(c.webhookUrl, { text: msg });
       }
-      updateLedger(key, { status: 'sent', messageId: r.id, snapshot: hash, cards: r.cards, ...(snap.chatReadAt ? { chatUntil: snap.chatReadAt } : {}) });
+      record({ status: 'sent', messageId: r.id, snapshot: hash, cards: r.cards, ...(snap.chatReadAt ? { chatUntil: snap.chatReadAt } : {}) });
       log(`sent ${key} messageId=${r.id} cards=${r.cards} ${Date.now() - t0}ms`);
     } catch (e) {
-      const st = readLedger()[key]?.status;
+      const st = scheduled ? 'sending' === activeReportLeasePhase() ? 'sending' : 'generating' : readLedger()[key]?.status;
       // After 'sending', only an HTTP error response proves nothing was posted; a network error or a reply
       // without a message id may still have been delivered, so it stays 'sending' (never resent automatically).
-      if (!dry) updateLedger(key, { status: st === 'sending' && !/^webhook HTTP \d/.test(e.message) ? 'sending' : 'failed', error: redact(e.message).slice(0, 300) });
+      if (!dry) record({ ...(scheduled ? {confirmedNoDelivery:/^webhook HTTP \d/.test(e.message)} : {}), status: st === 'sending' && !/^webhook HTTP \d/.test(e.message) ? 'sending' : 'failed', error: redact(e.message).slice(0, 300) });
       log(`FAILED ${key}: ${e.message}`);
       process.exitCode = 1;
     }
   }));
+  } catch (e) {
+    if (scheduled) { try { failScheduled(HOME,scheduled.key,'READ_OR_EXECUTION_FAILED'); } catch {} }
+    throw e;
+  } finally { activeReportLease = null; lease?.release(); }
 }
-main().catch(e => { log('FATAL ' + e.message); process.exit(1); });
+main().catch(e => {
+  if (args['scheduled-run']) { try { failScheduled(HOME,String(args['scheduled-run']),typeof e.code === 'string' && /^[A-Z_]+$/.test(e.code) ? e.code : 'EXECUTION_ENTRY_FAILED'); } catch {} }
+  log('FATAL ' + e.message); process.exit(1);
+});
