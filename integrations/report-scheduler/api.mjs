@@ -1,5 +1,5 @@
 import http from 'node:http';import crypto from 'node:crypto';import {fail} from './core.mjs';import {validId} from './service.mjs';
-function equal(a,b){return typeof a==='string'&&typeof b==='string'&&a.length===b.length&&crypto.timingSafeEqual(Buffer.from(a),Buffer.from(b));}
+function equal(a,b){return typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&crypto.timingSafeEqual(Buffer.from(a),Buffer.from(b));}
 export function createApi({service,token,port=0}){
  if(!/^[a-f0-9]{64}$/.test(token||''))fail('AUTH_NOT_CONFIGURED',503);
  const server=http.createServer(async(req,res)=>{
@@ -17,7 +17,7 @@ export function createApi({service,token,port=0}){
     const id=suffix.slice(1);if(!validId(id))fail('NOT_FOUND',404);return send(200,{data:service.detail(id)});
    }
    if(!['POST','PATCH','DELETE'].includes(req.method))fail('METHOD_NOT_ALLOWED',405);
-   if(req.headers['content-type']!=='application/json')fail('JSON_REQUIRED',415);
+   if(!/^application\/json(?:;\s*charset=utf-8)?$/i.test(req.headers['content-type']||''))fail('JSON_REQUIRED',415);
    if(req.headers['transfer-encoding']||Number(req.headers['content-length']||0)>32768)fail('BODY_TOO_LARGE',413);
    let raw='';for await(const chunk of req){raw+=chunk.toString('utf8');if(Buffer.byteLength(raw)>32768)fail('BODY_TOO_LARGE',413);}
    let body;try{body=JSON.parse(raw);}catch{fail('INVALID_JSON',400);}

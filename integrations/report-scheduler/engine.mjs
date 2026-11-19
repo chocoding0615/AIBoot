@@ -1,5 +1,5 @@
 import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';
-import {openStore,alive} from './store.mjs';import {fail,kst,nextOccurrence,occurrenceKey,regularProtected} from './core.mjs';import {fingerprint,WindowsBackend} from './windows.mjs';
+import {openStore,alive} from './store.mjs';import {fail,kst,nextOccurrence,occurrenceKey,regularProtected,conflicts} from './core.mjs';import {fingerprint,WindowsBackend,nativePlan} from './windows.mjs';
 const terminal=new Set(['sent','unknown','failed_not_sent','held','missed','skipped_nonworkday']);
 export function transitionScheduled(home,key,patch){
  return openStore(home).transaction((s,save)=>{const r=s.runs[key];if(!r)fail('RUN_NOT_FOUND',404);
@@ -9,10 +9,13 @@ export function transitionScheduled(home,key,patch){
   if(r.status==='sending'&&patch.status==='failed_not_sent'&&patch.confirmedNoDelivery!==true)fail('DELIVERY_UNCERTAIN');
   const safe={...patch};delete safe.confirmedNoDelivery;Object.assign(r,safe);save();return r;});
 }
-export function beginScheduled(home,key,now=Date.now(),nativeRead=()=>new WindowsBackend().read(),dispatchAllowed=()=>{try{return JSON.parse(fs.readFileSync(path.join(home,'extra-reports','access.json'),'utf8')).allowDispatch===true;}catch{return false;}}){
+export function beginScheduled(home,key,now=undefined,nativeRead=()=>new WindowsBackend().read(),dispatchAllowed=()=>{try{return JSON.parse(fs.readFileSync(path.join(home,'extra-reports','access.json'),'utf8')).allowDispatch===true;}catch{return false;}}){
  if(!dispatchAllowed())fail('DISPATCH_DISABLED',403);
- return openStore(home).transaction((s,save)=>{if(s.pending)fail('RECONCILIATION_REQUIRED',503);if(fingerprint(nativeRead())!==fingerprint(s.native))fail('TRIGGER_MISMATCH',503);const r=s.runs[key];if(!r||r.status!=='reserved')fail('RUN_NOT_RESERVED');
-  const at=Date.parse(r.scheduledAt);if(!Number.isFinite(at)||now<at||now>=at+60000)fail('OCCURRENCE_EXPIRED');
+ return openStore(home).transaction((s,save)=>{if(s.pending)fail('RECONCILIATION_REQUIRED',503);if(fingerprint(nativePlan(s,home))!==fingerprint(s.native)||fingerprint(nativeRead())!==fingerprint(s.native))fail('TRIGGER_MISMATCH',503);const r=s.runs[key];if(!r||r.status!=='reserved')fail('RUN_NOT_RESERVED');
+  now=now??Date.now();
+  const at=Date.parse(r.scheduledAt);if(!Number.isFinite(at)||now<at||now>=at+60000){Object.assign(r,{status:'missed',reason:'OCCURRENCE_EXPIRED',completedAt:new Date(now).toISOString()});save();fail('OCCURRENCE_EXPIRED');}
+  const reasons=conflicts(r.configSnapshot,Object.values(s.schedules));
+  if(reasons.length){Object.assign(r,{status:'held',reason:'SCHEDULE_CONFLICT',completedAt:new Date(now).toISOString()});save();return null;}
   if(regularProtected(now)){Object.assign(r,{status:'held',reason:'REGULAR_PRIORITY',completedAt:new Date(now).toISOString()});save();return null;}
   Object.assign(r,{pid:process.pid,status:'generating',startedAt:new Date(now).toISOString(),actualDate:kst(now).date});save();return structuredClone(r);});
 }
@@ -20,7 +23,7 @@ export function beginScheduled(home,key,now=Date.now(),nativeRead=()=>new Window
 export async function dispatch({store,windows,version,clock=Date.now,launch,isAlive=alive}){
  const keys=store.transaction((s,save)=>{
   if(s.pending)fail('RECONCILIATION_REQUIRED',503);
-  if(s.configVersion!==version||fingerprint(windows.read())!==fingerprint(s.native))fail('TRIGGER_MISMATCH',503);
+  if(s.configVersion!==version||fingerprint(nativePlan(s,store.home))!==fingerprint(s.native)||fingerprint(windows.read())!==fingerprint(s.native))fail('TRIGGER_MISMATCH',503);
   const now=clock(),minute=Math.floor(now/60000)*60000;
   reconcileRuns(s,now,isAlive);
   if(Object.keys(s.runs).length>=10000)fail('RUN_HISTORY_FULL',503);

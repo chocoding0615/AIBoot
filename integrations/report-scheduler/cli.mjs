@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import crypto from 'node:crypto';import {fileURLToPath} from 'node:url';import {execFileSync,spawn} from 'node:child_process';
-import {openStore,atomic} from './store.mjs';import {ScheduleService} from './service.mjs';import {WindowsBackend,fingerprint} from './windows.mjs';import {createApi} from './api.mjs';import {dispatch,transitionScheduled} from './engine.mjs';import {fail} from './core.mjs';
+import {openStore,atomic} from './store.mjs';import {ScheduleService} from './service.mjs';import {WindowsBackend,fingerprint} from './windows.mjs';import {createApi} from './api.mjs';import {dispatch,transitionScheduled} from './engine.mjs';import {fail} from './core.mjs';import {selfIdentity} from './process-proof.mjs';import {inspectGuards,recoverGuard} from './recovery.mjs';
 const root=path.dirname(fileURLToPath(import.meta.url)),args=process.argv.slice(2),mode=args[0],arg=name=>args[args.indexOf(name)+1],home=args.includes('--home')?path.resolve(arg('--home')):path.join(os.homedir(),'.aiboot');
 function secureAccess(file){
  if(process.platform!=='win32')return false;
@@ -10,6 +10,8 @@ function secureAccess(file){
 }
 async function main(){
  const accessFile=path.join(home,'extra-reports','access.json');
+ if(mode==='inspect-locks'){console.log(JSON.stringify(inspectGuards(home)));return;}
+ if(mode==='recover-guard'){console.log(JSON.stringify(recoverGuard(home,{scope:arg('--scope'),expectedFingerprint:arg('--fingerprint'),confirmed:args.includes('--confirm-recovery')})));return;}
  if(mode==='init-access'){
   if(process.platform!=='win32')fail('WINDOWS_REQUIRED',503);
   if(fs.existsSync(accessFile))fail('ACCESS_ALREADY_EXISTS');
@@ -32,7 +34,7 @@ async function main(){
  }
  if(mode==='activate-dispatch'||mode==='deactivate-dispatch'){
   if(!args.includes('--confirm-dispatch')||!secureAccess(accessFile))fail('ACTIVATION_CONFIRMATION_REQUIRED',403);
-  const state=store.read();if(state.pending||fingerprint(windows.read())!==fingerprint(state.native))fail('TRIGGER_MISMATCH',503);
+  if(mode==='activate-dispatch'){const state=store.read();if(state.pending||fingerprint(windows.read())!==fingerprint(state.native))fail('TRIGGER_MISMATCH',503);const diagnosis=inspectGuards(home);if(!selfIdentity().birth||diagnosis.scopes.some(g=>g.blocked||g.guardPresent||g.recoveryInProgress)||(diagnosis.lease&&!diagnosis.lease.safeDead))fail('EXECUTION_PROTECTION_BLOCKED',503);}
   const access=JSON.parse(fs.readFileSync(accessFile,'utf8'));access.allowDispatch=mode==='activate-dispatch';atomic(accessFile,access);console.log(JSON.stringify({dispatchEnabled:access.allowDispatch}));return;
  }
  if(mode==='serve'||mode==='recover'){

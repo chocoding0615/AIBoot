@@ -4,7 +4,7 @@ export class ScheduleError extends Error { constructor(code,status=409,details={
 export const fail=(code,status=409,details={})=>{throw new ScheduleError(code,status,details);};
 export function kst(ms){const d=new Date(ms+9*3600000);return {date:d.toISOString().slice(0,10),day:d.getUTCDay()||7,minute:d.getUTCHours()*60+d.getUTCMinutes()};}
 export function validateRule(rule){
- if(!rule||Object.keys(rule).some(k=>!['weekdays','time','effectiveFrom'].includes(k)))fail('INVALID_RULE',400);
+ if(!rule||typeof rule!=='object'||Array.isArray(rule)||Object.keys(rule).some(k=>!['weekdays','time','effectiveFrom'].includes(k)))fail('INVALID_RULE',400);
  if(!Array.isArray(rule.weekdays)||!rule.weekdays.length||rule.weekdays.length>7||new Set(rule.weekdays).size!==rule.weekdays.length||rule.weekdays.some(d=>!Number.isInteger(d)||d<1||d>7))fail('INVALID_WEEKDAYS',400);
  if(typeof rule.time!=='string'||!/^([01]\d|2[0-3]):[0-5]\d$/.test(rule.time))fail('INVALID_TIME',400);
  if(rule.effectiveFrom!==undefined&&(!/^\d{4}-\d{2}-\d{2}$/.test(rule.effectiveFrom)||!Number.isFinite(Date.parse(rule.effectiveFrom))||new Date(rule.effectiveFrom).toISOString().slice(0,10)!==rule.effectiveFrom))fail('INVALID_DATE',400);
@@ -32,6 +32,6 @@ export function regularProtected(at,duration=RUN_MS){
  const p=kst(at),week=(p.day-1)*1440+p.minute,fraction=(at%60000)/60000;
  return [0,1,2,3,4].some(d=>[[540,675],[930,1065]].some(([a,b])=>overlap([week+fraction,week+fraction+duration/60000],[d*1440+a,d*1440+b])));
 }
-export function firstRun(rule,now){const at=nextOccurrence(rule,now+1);if(at<now+LEAD_MS)fail('LEAD_TIME',409,{earliestAllowedAt:new Date(now+LEAD_MS).toISOString()});return at;}
+export function firstRun(rule,now){const at=nextOccurrence(rule,Math.floor(now/60000)*60000);if(at<now+LEAD_MS)fail('LEAD_TIME',409,{earliestAllowedAt:new Date(now+LEAD_MS).toISOString()});return at;}
 export const occurrenceKey=(id,at)=>'extra|'+id+'|'+new Date(at).toISOString()+'|antigravity';
-export function publicSchedule(s,now){return {id:s.id,version:s.version,enabled:s.enabled,deleted:!!s.deleted,timezone:TZ,rule:s.rule,firstRunAt:new Date(s.firstRunAt).toISOString(),nextRunAt:!s.enabled||s.deleted?null:new Date(nextOccurrence(s.rule,Math.max(now+1,s.firstRunAt))).toISOString()};}
+export function publicSchedule(s,now){return {id:s.id,version:s.version,enabled:s.enabled,deleted:!!s.deleted,timezone:TZ,workdayPolicy:'existing_workday',workdayEvaluation:'at_execution',nextRunMeaning:'trigger_attempt',maySkipNonWorkday:true,rule:s.rule,firstRunAt:new Date(s.firstRunAt).toISOString(),nextRunAt:!s.enabled||s.deleted?null:new Date(nextOccurrence(s.rule,Math.max(now+1,s.firstRunAt))).toISOString()};}

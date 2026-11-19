@@ -1,6 +1,6 @@
 # 반복 추가 예약 보고 API v1 — 검토용 구현 계약
 
-2026-11-19. 대상: AIBoot의 기존 실행기 + 로컬 예약 관리 어댑터. 기존 09:30/16:00 KST 정기 보고는 변경하지 않는다. 이 문서는 운영 설치·예약 등록·발송 승인이 아니다.
+2026-11-19 최종 계약. 대상: AIBoot의 기존 실행기 + 로컬 예약 관리 어댑터. 기존 09:30/16:00 KST 정기 보고는 변경하지 않는다. 이 문서는 운영 설치·예약 등록·발송 승인이 아니다.
 
 ## 상태·경계
 
@@ -14,13 +14,13 @@
 
 127.0.0.1:17841에만 수신한다. 다른 포트는 명시 로컬 CLI 설정만 허용한다. LAN/0.0.0.0·모바일 원격 공개·CORS·쿠키 기반 자동 인증은 지원하지 않는다.
 
-신뢰된 동일 PC 백엔드가 Authorization: Bearer <로컬 32바이트 무작위 제어 토큰>으로 호출한다. 브라우저는 자체 UI 백엔드를 통해 연결해야 한다. Google 토큰이나 웹훅을 이 인증에 사용하지 않는다.
+신뢰된 동일 PC 백엔드가 Authorization: Bearer <로컬 32바이트 무작위 제어 토큰>으로 호출한다. 브라우저는 자체 UI 백엔드를 통해 연결해야 한다. Google 토큰이나 웹훅을 이 인증에 사용하지 않는다. **제어 토큰을 브라우저에 전달하지 않는다.** UI 백엔드는 자체 사용자 세션·CSRF·Origin 검증을 먼저 완료해야 하며, 무인증 프록시가 토큰을 주입하거나 브라우저 헤더를 무조건 제거해 권한을 대신해서는 안 된다.
 
 토큰은 init-access로 사용자 전용 ACL 폴더의 access.json에 생성하며 출력/URL에 넣지 않는다. 현 사용자와 SYSTEM 외 Allow ACE가 있으면 시작을 거절한다. Origin 또는 Sec-Fetch-Site 헤더가 있는 요청, Host 불일치, 비루프백 연결은 차단한다. CSRF를 피하려고 인증을 생략하는 폴백은 없다.
 
 serve는 기본 writeEnabled=false다. 별도 설치 승인 후 인증·ACL·호출 주체·Windows 권한을 검증하고 --enable-writes로 명시 시작해야 변경할 수 있다. 인증 검사 실패 시 서버는 시작하지 않는다. 운영 인증/실제 변경 권한은 배포 전에 재검증한다.
 
-예약 관리 쓰기 허용과 실제 추가 발송 활성화는 별개다. init-access는 allowDispatch=false로 생성한다. 추가 작업이 등록되어 있어도 이 값이 false면 해당 회차는 held/DISPATCH_DISABLED로 표시하고 모델·웹훅을 호출하지 않는다. 실제 runner 진입도 이 값을 재확인한다. 별도 발송 승인·비발송 QA 후 로컬 activate-dispatch --confirm-dispatch로만 활성화한다. 비활성화는 deactivate-dispatch --confirm-dispatch이며 이미 실행 중인 회차를 취소하지 않는다. 원격 활성화 API는 없다.
+예약 관리 쓰기 허용과 실제 추가 발송 활성화는 별개다. init-access는 allowDispatch=false로 생성한다. 추가 작업이 등록되어 있어도 이 값이 false면 해당 회차는 held/DISPATCH_DISABLED로 표시하고 모델·웹훅을 호출하지 않는다. 실제 runner 진입도 이 값을 재확인한다. 별도 발송 승인·비발송 QA 후 로컬 activate-dispatch --confirm-dispatch로만 활성화한다. 비활성화는 deactivate-dispatch --confirm-dispatch이며 이미 실행 중인 회차를 취소하지 않는다. 이 비활성화는 예약 상태 손상/pending/트리거 불일치 중에도 가능하고, 반대로 활성화는 이 상태에서 거절한다. 원격 활성화 API는 없다.
 
 ## 공통 자료형
 
@@ -36,11 +36,13 @@ Schedule:
 - enabled, deleted, timezone, rule.
 - firstRunAt: 최근 생성/활성화/수정에서 확정된 최초 예정 회차.
 - nextRunAt: 다음 주간 트리거 시각 또는 정지/삭제이면 null.
+- workdayPolicy: existing_workday, workdayEvaluation: at_execution.
+- nextRunMeaning: trigger_attempt, maySkipNonWorkday: true. 주말·공휴일·휴가 예약도 저장할 수 있으나 실행 시 기존 workday 정책으로 건너뛸 수 있음을 UI에 표시한다.
 - 다음 예정 시각은 근무일 정책에 따라 건너뛸 수 있는 트리거 예정 시각이다. 서버는 결과 도착 시각으로 표현하지 않는다.
 
 Run:
 - key: extra|예약ID|예정시각(RFC3339 UTC)|antigravity.
-- scheduleId, scheduledAt, scheduledDate(KST), startedAt, completedAt, webhookAcceptedAt.
+- scheduleId, scheduledAt, scheduledDate(KST), actualDate(실제 시작 KST 날짜 또는 null), startedAt, completedAt, webhookAcceptedAt.
 - status: reserved | generating | sending | sent | failed_not_sent | unknown | held | missed | skipped_nonworkday.
 - reason: 안전한 오류 코드 또는 null.
 - receiptEvidencePresent: 웹훅 접수 증거 존재 여부. userReceiptVerified는 현재 null.
@@ -68,8 +70,8 @@ validate의 operation은 create/update/pause/resume/delete다. 생성 preview의
 
 ## 유효성·충돌·우선순위
 
-- Windows PC 서버 KST 기준 가장 가까운 요청 회차가 현재+20분 이상이어야 한다. 더 임박하면 LEAD_TIME으로 거절하며 자동으로 다른 시각/다음 주로 바꾸지 않는다. 미래 날짜는 effectiveFrom으로 명시한다.
-- 저장 직전 Windows 반영 후에도 서버 시각으로 +20분을 재확인한다. 늦어졌으면 작업·설정을 복구한다.
+- Windows PC 서버 KST 기준 현재 분을 포함한 가장 가까운 요청 회차가 현재+20분 이상이어야 한다. 더 임박하면 LEAD_TIME으로 거절하며 자동으로 다른 시각/다음 주로 바꾸지 않는다. 미래 날짜는 effectiveFrom으로 명시한다.
+- 저장 직전 Windows 반영 후와 최종 저장 직후 모두 서버 시각으로 +20분을 재확인한다. 클라이언트의 임시 30분 규칙은 사용하지 않는다. 늦어졌으면 작업·설정을 복구한다.
 - 요일 주기 전체를 주간 원형 구간으로 비교한다. 최초 회차 날짜가 달라도 미래 같은 요일의 겹침과 일요일→월요일 자정 경계를 검사한다.
 - 정기 보고 보호 구간은 월~금 09:00~11:15, 15:30~17:45. 기존 15분 재시도·75분 재확인·생성 timeout·지연 여유를 보존한 보수적 차단이다. 추가 보고 20분 실행 예산이 조금이라도 겹치면 등록을 거절한다.
 - 추가 예약끼리도 20분 실행 구간의 겹침을 거절한다. 15분 이하 간격은 지원하지 않는다.
@@ -87,7 +89,7 @@ validate의 operation은 create/update/pause/resume/delete다. 생성 preview의
 
 공통 report-execution.json lease는 정기/추가 보고의 조회·생성·발송을 보호한다. PID와 생성 자식 PID가 살아 있거나 생존 확인이 불명확하면 TTL만으로 회수하지 않는다. 죽은 소유자만 짧은 mutex 안에서 회수하고 복구 메타데이터를 남긴다. 기존 원장 키·시도 횟수·Chat 커서는 건드리지 않는다. sending 이후 죽은 추가 회차는 unknown으로 남긴다.
 
-짧은 mutex 자체를 보유한 채 강제 종료되면 guard가 남을 수 있다. 이를 시간만 보고 자동 삭제하지 않는다. 프로세스/자식/발송 상태 확인 후 별도 수동 복구가 필요하다. 이 경우 공통 실행 안전 차단으로 정기 보고도 지연될 수 있는 잔여 위험이다. 추가 상태 파일 손상만으로 정기 보고를 막지는 않는다.
+짧은 mutex 자체를 보유한 채 강제 종료되면 guard가 남을 수 있다. 아래 명시적 오프라인 복구 절차를 사용하며 시간만 보고 자동 삭제하지 않는다. 소유 PID 생성 시각을 기록하고, 전체 lease의 자동 회수도 현재 프로세스 트리 증명을 재확인한다. PID 재사용·생존 불명·자식 생존은 계속 차단한다. 추가 상태/추가 mutation.guard는 정기 보고가 읽지 않으므로 별도 장애 범위다. 공통 guard 잔류만 정기 보고를 안전 차단할 수 있으며, 증명 불가 상태에서는 운영 활성화를 허용하지 않는다.
 
 ## Windows·부재·용량
 
@@ -100,13 +102,13 @@ validate의 operation은 create/update/pause/resume/delete다. 생성 preview의
 
 ## 오류
 
-400 INVALID_RULE/INVALID_WEEKDAYS/INVALID_TIME/INVALID_DATE/INVALID_REQUEST/INVALID_JSON/INVALID_OPERATION/INVALID_IDEMPOTENCY_KEY/CONFIRMATION_REQUIRED.
+400 NO_OCCURRENCE/INVALID_RULE/INVALID_WEEKDAYS/INVALID_TIME/INVALID_DATE/INVALID_REQUEST/INVALID_JSON/INVALID_OPERATION/INVALID_IDEMPOTENCY_KEY/CONFIRMATION_REQUIRED.
 401 AUTH_REQUIRED.
 403 DISPATCH_DISABLED/ACTIVATION_CONFIRMATION_REQUIRED/WRITES_DISABLED/LOCAL_ONLY/CSRF_BLOCKED/ACCESS_ACL_UNVERIFIED.
 404 NOT_FOUND/RUN_NOT_FOUND.
 405 METHOD_NOT_ALLOWED, 413 BODY_TOO_LARGE, 415 JSON_REQUIRED.
-409 LEAD_TIME/SCHEDULE_CONFLICT/VERSION_CONFLICT/IDEMPOTENCY_CONFLICT/RUN_ACTIVE/STORE_BUSY/SCHEDULE_LIMIT/RUN_NOT_RESERVED/OCCURRENCE_EXPIRED/LEASE_LOST/DELIVERY_UNCERTAIN.
-503 STORE_CORRUPT/EXECUTION_STATE_CORRUPT/TRIGGER_MISMATCH/WINDOWS_TASK_FAILED/RECONCILIATION_REQUIRED/WINDOWS_REQUIRED/REQUEST_HISTORY_FULL/RUN_HISTORY_FULL/INTERNAL_ERROR.
+409 RECOVERY_IN_PROGRESS/LEAD_TIME/SCHEDULE_CONFLICT/VERSION_CONFLICT/IDEMPOTENCY_CONFLICT/RUN_ACTIVE/STORE_BUSY/SCHEDULE_LIMIT/RUN_NOT_RESERVED/OCCURRENCE_EXPIRED/LEASE_LOST/DELIVERY_UNCERTAIN.
+503 EXECUTION_PROTECTION_BLOCKED/STORE_CORRUPT/EXECUTION_STATE_CORRUPT/TRIGGER_MISMATCH/WINDOWS_TASK_FAILED/RECONCILIATION_REQUIRED/WINDOWS_REQUIRED/REQUEST_HISTORY_FULL/RUN_HISTORY_FULL/INTERNAL_ERROR.
 
 미확인·조회 실패를 자료 없음/완료/발송 실패 확정으로 바꾸지 않는다. HTTP 오류 응답 외 네트워크 단절·메시지 ID 부재는 발송 결과 불명이며 재발송하지 않는다.
 
@@ -115,3 +117,66 @@ validate의 operation은 create/update/pause/resume/delete다. 생성 preview의
 합성 데이터로 CRUD/주간 충돌/자정/+20분/동시 요청/저장 실패/트리거 불일치/강제 종료/재시작/결과 불명/정기 원장 불변/loopback 인증·CSRF를 검증한다. 설치 SDK는 실제 클래스와 합성 transport로 main→snapshot을 확인한다.
 
 실제 회사 보고 발송, Windows 추가 작업 등록·트리거 정시 실행, 실전 전원 종료·절전·로그아웃 복귀, 운영 인증·권한·최종 UI 연결은 미검증이다. 개발 완료를 운영 검증 완료로 표현하지 않는다.
+
+## P1 guard 복구 — 운영자 전용, HTTP 경로 없음
+
+역할을 구분한다. extra-reports/mutation.guard는 예약 저장/이력의 짧은 커밋 보호이며 정기 보고와 분리된다. report-execution.guard는 전체 lease 파일 갱신의 짧은 보호다. report-execution.json은 조회·생성·발송 전체의 소유권이다. 기존 ledger.lock/ledger.json은 기존 원장 보호이며 이 복구 명령이 변경하지 않는다.
+
+1. 읽기 전용 cli.mjs inspect-locks --home <운영 홈>으로 scope, fingerprint, 소유 PID/birth, 자식/생존 증명, phase를 확인한다. 브라우저에 이 진단을 전달하지 않는다.
+2. 별도 유지보수 승인을 받고 먼저 deactivate-dispatch --confirm-dispatch로 미래 추가 발송을 비활성화한 뒤 API 서버를 중지한다. 기존 정기 작업 2개 및 추가 작업이 있으면 비활성화하고 실행 중이 아님을 확인한다. 이번 개발 작업에서는 이 조치를 실행하지 않는다.
+3. 검증한 코드에서 cli.mjs recover-guard --scope execution|schedule --fingerprint <검사한 SHA256> --confirm-recovery --home <운영 홈>을 실행한다. 명령이 실제 작업 비활성 상태를 다시 확인한다.
+4. 복구 마커를 먼저 획득한다. 일반 writer는 마커를 guard 생성 전·후 검사하므로 교체 guard를 잘못 회수하는 경합을 막는다.
+5. 소유 PID와 생성 시각·전체 lease 소유자 및 기록된 자식·현재 자식 트리를 두 번 검사한다. 죽음이 증명되고 살아 있는 자식이 없을 때만 guard를 recovered-UUID 디렉터리로 이동해 증거를 보존한다. 무조건 삭제하거나 TTL로 판단하지 않는다.
+6. sending lease와 기존 정기/추가 원장·시도 횟수·Chat 커서는 그대로 둔다. sending의 복구 결과는 unknown_preserved다. 같은 회차 재시도 허가는 아니다.
+7. pending이 남았으면 실제 추가 발송 비활성화를 확인한 뒤 별도의 recover --enable-writes로 이전 Windows/예약 계획 복구를 확인한다. inspect-locks, status와 기존 정기 보고 비발송 검증을 마친 뒤 승인된 순서로 기존 작업을 복원한다. 추가 실발송은 별도 활성화다.
+
+소유권 불명·PID 재사용·자식 생존·JSON 손상·구형 guard의 phase 부재·복구 마커 자체 잔류는 자동 복구하지 않는다. 운영 활성화를 차단하고 스냅샷/작업 XML/원장 백업을 보존한다. 모든 진입점 중지 및 프로세스/자식/발송 상태를 운영자가 증명한 별도 오프라인 검토 전 파일을 지우지 않는다. 재부팅은 프로세스를 종료할 뿐 발송 결과 불명 기록을 해소하지 않는다.
+
+복구 CLI 오류: DISPATCH_MUST_BE_DISABLED(409), RECOVERY_CONFIRMATION_REQUIRED(403), MAINTENANCE_REQUIRED(409), INVALID_RECOVERY_SCOPE/RECOVERY_FINGERPRINT_REQUIRED(400), RECOVERY_IN_PROGRESS/RECOVERY_SNAPSHOT_CHANGED/OWNER_OR_CHILD_UNVERIFIED(409), RECOVERY_LAYOUT_INVALID/GUARD_REVIEW_REQUIRED/LEASE_REVIEW_REQUIRED(503). 활성화 명령은 잔류 guard·복구 마커·증명 불가 lease·자기 프로세스 신원 불명이 있으면 EXECUTION_PROTECTION_BLOCKED로 거절한다.
+
+## Claude Code 연결 기준
+
+브라우저는 UI 백엔드만 호출한다. 아래는 인증된 UI 백엔드가 같은 PC의 AIBoot에 보내는 예이며 토큰은 서버 메모리/사용자 전용 로컬 파일에만 둔다.
+
+- 목록: GET /api/report-schedules → data.configVersion/serverNow/writeEnabled/dispatchEnabled/triggerStatus 및 items. writeEnabled는 설정 변경 권한이며 현재 실행 가능 보장이 아니다.
+- 사전 검사: POST /api/report-schedules/validate. 다음 예시는 configVersion=0인 합성 예이며 저장·활성화하지 않는다.
+
+```json
+{
+  "operation": "create",
+  "rule": {
+    "weekdays": [
+      1,
+      4
+    ],
+    "time": "13:00"
+  },
+  "expectedVersion": 0
+}
+```
+
+- 생성: POST /api/report-schedules, 새 Idempotency-Key 헤더와 아래 JSON을 사용한다. 201의 data.schedule.id가 확정 ID다. preview의 임시 ID를 저장 ID로 사용하지 않는다.
+
+```json
+{
+  "rule": {
+    "weekdays": [
+      1,
+      4
+    ],
+    "time": "13:00"
+  },
+  "expectedVersion": 0,
+  "confirmed": true
+}
+```
+
+- 수정·정지·재개·삭제는 같은 expectedVersion/confirmed/멱등 키 규칙을 따른다. 성공의 새 configVersion을 반영한다. 결과를 잃으면 동일 키와 동일 요청으로 재확인하며 다른 내용에 키를 재사용하지 않는다.
+- LEAD_TIME: error.details.earliestAllowedAt 표시. 자동으로 다음 주로 이동하거나 서버 대신 30분 규칙을 적용하지 않는다.
+- SCHEDULE_CONFLICT: error.details.reasons[].kind가 regular_protected 또는 extra_overlap. 원인의 weekday/scheduleId를 표시한다.
+- VERSION_CONFLICT: 목록 재조회 후 사용자가 diff를 다시 확인한다. RUN_ACTIVE는 실행 중 변경/삭제 불가다.
+- TRIGGER_MISMATCH/RECONCILIATION_REQUIRED/RECOVERY_IN_PROGRESS/EXECUTION_PROTECTION_BLOCKED: 오류로 표시하고 저장/실행 성공으로 꾸미지 않는다. 복구 API를 만들거나 실제 발송 활성화를 UI에서 우회하지 않는다.
+- 예약 시각, 실제 시작/완료, webhookAcceptedAt을 분리한다. sent는 웹훅 접수이며 사용자 수신 확인이 아니다. unknown은 실패 확정이나 미발송이 아니다.
+- 주말/휴일 예약의 nextRunAt은 다음 트리거 시각이다. workdayPolicy/nextRunMeaning/maySkipNonWorkday 필드를 근거로 실행 시 건너뛸 수 있음을 표시한다.
+
+구현에서 JSON Content-Type은 application/json 및 UTF-8 charset 표기를 허용한다. expectedVersion은 0 이상의 정수이며 누락/문자열은 INVALID_REQUEST(400), confirmed가 true가 아니면 CONFIRMATION_REQUIRED(400)다. 필요 없는 operation/id/rule 입력도 거절한다.

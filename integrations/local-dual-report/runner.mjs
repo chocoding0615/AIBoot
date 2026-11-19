@@ -865,6 +865,7 @@ async function main() {
     const t0 = Date.now();
     try {
       // --from-report re-sends a saved answer without calling the agent (dry-run or test only; still fully validated).
+      activeReportLease?.phase('generating'); currentReportPhase = 'generating';
       const raw = (dry || test) && args['from-report'] ? fs.readFileSync(path.join(REPORT_DIR, `${date}-${slot}-${agent}-${args['from-report']}.md`), 'utf8')
         : await generate(agent, note ? text + '\n\n' + note : text);
       if (/chat\.googleapis\.com|key=AIza|token=/.test(raw)) throw new Error('output contains secret-like text; not sent');
@@ -907,4 +908,7 @@ async function main() {
     throw e;
   } finally { activeReportLease = null; lease?.release(); }
 }
-main().catch(e => { log('FATAL ' + e.message); process.exit(1); });
+main().catch(e => {
+  if (args['scheduled-run']) { try { failScheduled(HOME,String(args['scheduled-run']),typeof e.code === 'string' && /^[A-Z_]+$/.test(e.code) ? e.code : 'EXECUTION_ENTRY_FAILED'); } catch {} }
+  log('FATAL ' + e.message); process.exit(1);
+});
