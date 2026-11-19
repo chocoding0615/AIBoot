@@ -36,7 +36,7 @@ test('실행기: 운영 기간 판단은 runPlan 하나, 시간대·휴무 확�
   const src = fs.readFileSync(new URL('../runner.mjs', import.meta.url), 'utf8');
   assert.equal(/date > c\.trialEnd/.test(src), false);
   const main = src.slice(src.indexOf('const plan = runPlan('));
-  const order = ['if (plan.skip)', 'agents = plan.agents', 'SLOTS[slot].start', 'await workday(date, c)'].map(x => main.indexOf(x));
+  const order = ['if (plan.skip)', "agents = scheduled ? ['antigravity'] : plan.agents", 'SLOTS[slot].start', 'await workday(date, c)'].map(x => main.indexOf(x));
   assert.ok(order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1])), String(order));
   assert.ok(src.indexOf('retryNote(readLedger()[key])') < src.indexOf('dry ? true : claim(key)'));
   assert.match(src, /cur\.status === 'sent' \|\| cur\.status === 'sending'/);

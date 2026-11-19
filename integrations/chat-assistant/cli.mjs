@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import { executionBusy } from '../report-scheduler/execution.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -128,7 +129,7 @@ export async function main(argv = process.argv.slice(2)) {
     do {
       try {
         const collection = await collect(store.state, c, async args => (await api.chat.spaces.messages.list(args)).data, store.save, new Date());
-        const io = { now: () => new Date(), reportLedger: ledger, readSources: read, save: store.save,
+        const io = { now: () => new Date(), reportLedger: ledger, executionBusy: () => executionBusy(home), readSources: read, save: store.save,
           policy: ['CURRENT.md', 'docs/FIXED-EXPENSES-V1.md'].map(file => `### ${file}\n` + fs.readFileSync(path.join(repo, file), 'utf8')).join('\n\n'), generate: generateAntigravity,
           readCompletionSource: () => readCompletionSource({ report, sheets: api.sheets, home }),
           post: async text => {
