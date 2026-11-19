@@ -1,15 +1,22 @@
 import http from 'node:http';import crypto from 'node:crypto';import {fail} from './core.mjs';import {validId} from './service.mjs';
 function equal(a,b){return typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&crypto.timingSafeEqual(Buffer.from(a),Buffer.from(b));}
-export function createApi({service,token,port=0}){
+export function createApi({service,reader,token,port=0}){
  if(!/^[a-f0-9]{64}$/.test(token||''))fail('AUTH_NOT_CONFIGURED',503);
  const server=http.createServer(async(req,res)=>{
+  const requestedAt=new Date();
   const send=(status,data)=>{if(res.destroyed||res.writableEnded)return;res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(data));};
   try{
    if(req.socket.remoteAddress!=='127.0.0.1'||req.headers.host!=='127.0.0.1:'+server.address().port)fail('LOCAL_ONLY',403);
    // Server-to-server bearer only. No browser origin, CORS, ambient cookies or query token bootstrap.
    if(req.headers.origin!==undefined||req.headers['sec-fetch-site']!==undefined)fail('CSRF_BLOCKED',403);
    if(!equal(req.headers.authorization,'Bearer '+token))fail('AUTH_REQUIRED',401);
-   const url=new URL(req.url,'http://127.0.0.1');if(url.search)fail('INVALID_REQUEST',400);
+   const url=new URL(req.url,'http://127.0.0.1');
+   if(reader&&['/api/health','/api/reports','/api/tasks','/api/connections'].includes(url.pathname)){
+    if(req.method!=='GET')fail('METHOD_NOT_ALLOWED',405);
+    const abort=new AbortController(),cancel=()=>{if(!res.writableEnded)abort.abort();};res.on('close',cancel);
+    try{return send(200,await reader.handle(url,{signal:abort.signal}));}finally{res.removeListener('close',cancel);}
+   }
+   if(url.search)fail('INVALID_REQUEST',400);
    const prefix='/api/report-schedules',suffix=url.pathname.slice(prefix.length);
    if(!url.pathname.startsWith(prefix))fail('NOT_FOUND',404);
    if(req.method==='GET'){
@@ -38,8 +45,8 @@ export function createApi({service,token,port=0}){
    }
    if(!['create','update'].includes(operation)&&body.rule!==undefined)fail('INVALID_REQUEST',400);
    send(operation==='create'?201:200,{data:service.mutate(operation,input,{expectedVersion:body.expectedVersion,confirmed:body.confirmed,idempotencyKey:req.headers['idempotency-key']})});
-  }catch(e){send(e.status||503,{error:{code:e.code||'INTERNAL_ERROR',...(e.details?{details:e.details}:{})}});}
+  }catch(e){const error={code:e.code||'INTERNAL_ERROR',...(e.details?{details:e.details}:{})};const read=reader&&['/api/health','/api/reports','/api/tasks','/api/connections'].includes(req.url.split('?')[0]);send(e.status||503,read?{requestId:crypto.randomUUID(),apiVersion:'v0',status:'error',error,meta:{requestedAt:requestedAt.toISOString(),completedAt:new Date().toISOString(),durationMs:Date.now()-requestedAt.getTime(),partial:false,sources:e.details?.sources||[]}}:{error});}
  });
  server.requestTimeout=5000;server.headersTimeout=5000;server.keepAliveTimeout=1000;
- return {server,listen:()=>new Promise(resolve=>server.listen(port,'127.0.0.1',()=>resolve(server.address()))),close:()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();})};
+ return {server,listen:()=>new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',()=>resolve(server.address()));}),close:()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();})};
 }

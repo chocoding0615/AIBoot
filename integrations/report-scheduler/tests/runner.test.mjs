@@ -12,7 +12,7 @@ function fixture(t,{extra=true,deliveryError=null}={}){
  const cfg={trialStart:'2026-11-04',trialEnd:'2026-11-10',afterTrialAgents:['antigravity'],webhookUrl:'https://example.invalid/synthetic'};
  const readLedger=()=>JSON.parse(fs.readFileSync(ledgerFile,'utf8'));
  const context={args:extra?{}:{slot:'morning'},HOME:home,SLOTS:{morning:{start:'09:30',end:'11:00',label:'오전'},afternoon:{start:'16:00',end:'17:30',label:'오후'}},AGENTS:{antigravity:'Antigravity',codex:'Codex'},cfg:()=>cfg,today:()=>new Date(now+9*3600000).toISOString().slice(0,10),hm:()=>extra?'13:00':'09:45',Date:DateClock,runPlan,log:()=>{},workday:async()=>({ok:true}),TEST_TAGS:{},
-  beginScheduled:(h,k)=>beginScheduled(h,k,now,windows.read,()=>true),transitionScheduled,failScheduled,artifactId,acquireExecution:(h,o)=>acquireExecution(h,{...o,inspectProcess:pid=>pid===99999999?{state:'dead',birth:null,descendants:[]}:({state:'alive',birth:'synthetic',descendants:[]})}),
+  beginScheduled:(h,k)=>beginScheduled(h,k,now,windows.read,()=>true),transitionScheduled,failScheduled,artifactId,acquireExecution:(h,o)=>acquireExecution(h,{...o,now:clock(),inspectProcess:pid=>pid===99999999?{state:'dead',birth:null,descendants:[]}:({state:'alive',birth:'synthetic',descendants:[]})}),
   activeReportLease:null,currentReportPhase:'reading',activeReportLeasePhase:()=>context.currentReportPhase,
   snapshot:async()=>({text:'synthetic',contracts:[],licenses:[],welfare:[],recurring:[],chatText:'',sources:{fixed:'연결'},chatReadAt:'cursor'}),
   facts:async()=>({text:'synthetic'}),prompt:()=>'',crypto,path,readLedger,retryNote,
