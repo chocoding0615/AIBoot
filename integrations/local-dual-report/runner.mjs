@@ -336,8 +336,7 @@ async function chatSince(date, c, useLedger = true, slot = '') {
 const stripPersonal = s => String(s).replace(/01[016789]-?\d{3,4}-?\d{4}/g, '<전화번호 생략>');
 /** @return {{text:string, sources:object, contracts:object[], licenses:object[]}} */
 async function snapshot(c, slot = '') {
-  const sheets = sheetsClient(c);
-  sheets.spreadsheets = createOfficialReader(sheets.spreadsheets, c);
+  const sheets = { spreadsheets: createOfficialReader(sheetsClient(c).spreadsheets, c) };
   const sources = {};
   const r = await sheets.spreadsheets.get({
     spreadsheetId: c.spreadsheetId,

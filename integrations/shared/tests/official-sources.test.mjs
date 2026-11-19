@@ -244,3 +244,19 @@ test('hidden visibility adds zero API calls across a complete allowed source pas
  }
  assert.deepEqual(counts,[{all:14,meta:4},{all:14,meta:4}]);
 });
+
+test('P0: actual main -> snapshot accepts non-writable SDK spreadsheets without send/model/ledger writes',async()=>{
+ const f=fixture(),sdk={};Object.defineProperty(sdk,'spreadsheets',{value:f.api,writable:false,configurable:false});
+ assert.throws(()=>{sdk.spreadsheets=f.reader;},TypeError);
+ const c={...config,opsSpreadsheetId:null,recurringSpreadsheetId:null};
+ const seen=[],ctx={sheetsClient:()=>sdk,createOfficialReader,CONTRACT_RANGES,parseContractDb,stripPersonal:x=>x,daysBetween:(a,b)=>(Date.parse(b)-Date.parse(a))/86400000,bucketOf:d=>d>=0&&d<=60?'D-60':null,today:()=> '2026-11-18',chatSnapshot:async()=>({status:'미연결'}),log:()=>{}};
+ const snap=extract(runnerText,'snapshot',ctx);
+ const main=extract(runnerText,'main',{...ctx,args:{slot:'morning',test:true,'facts-only':true},SLOTS:{morning:{}},AGENTS:{antigravity:'test'},cfg:()=>c,runPlan:()=>({agents:['antigravity']}),snapshot:snap,facts:async()=>({text:'synthetic facts'}),prompt:()=>'',crypto:{createHash:()=>({update:()=>({digest:()=> 'synthetic'})})},console:{log:x=>seen.push(x)}});
+ await main();assert.deepEqual(seen,['synthetic facts']);assert.equal(sdk.spreadsheets,f.api);assert.ok(f.calls.length>0);
+});
+test('P0: frozen SDK still rejects wrong gid before source values are read',async()=>{
+ const f=fixture({gidChange:999}),sdk=Object.freeze({spreadsheets:f.api});
+ const snap=extract(runnerText,'snapshot',{sheetsClient:()=>sdk,createOfficialReader,CONTRACT_RANGES,parseContractDb});
+ await assert.rejects(snap({...config}),{code:'SOURCE_GID_MISMATCH'});
+ assert.equal(f.calls.filter(c=>c.method!=='get'||c.ranges).length,0);
+});
