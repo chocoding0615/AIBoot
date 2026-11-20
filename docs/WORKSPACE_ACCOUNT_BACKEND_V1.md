@@ -79,7 +79,9 @@ node integrations/workspace-api/verify-accounts.mjs --confirm-existing-auth-read
 
 기존 파일 해시와 정기 작업 XML을 사용자 전용 비공개 감사 폴더에 보존 → 임시 localhost 세션/제어 서버 → 새 POST 최소 검사 → 기존 GET connections 전후 비교 → 서버 종료 → 파일·작업 불변 확인 순서다. OAuth/업무 원문은 로그·Git에 저장하지 않으며 실제 토큰 복사본을 새로 만들지 않는다.
 
-2026-11-20 10:51 KST:409 REPORT_PROTECTED, 외부 읽기/refresh/모델/웹훅0. 기존 GET 호환 및 운영 설정·원장·인증 파일·커서 해시·작업 XML 불변, 임시 서버 종료를 확인했다. 보호 시간 외 실접근 결과는 추가 확인 전 성공으로 표시하지 않는다.
+2026-11-20 10:51 KST:409 REPORT_PROTECTED, 외부 읽기/refresh/모델/웹훅0. 기존 GET 호환 및 운영 설정·원장·인증 파일·커서 해시·작업 XML 불변, 임시 서버 종료를 확인했다. 이 결과를 연결 성공으로 표시하지 않았다.
+
+2026-11-20 11:15 KST: 정기 작업 Ready·실행 중 아님을 재확인하고 최소 실접근1회 실행. HTTP200/status=ok,11795ms, Sheets/Chat 모두 connected·verifiedAccess=true·scopeStatus=sufficient(최소 검사 범위). 승인 메타데이터 GET6회와 기존 grant의 메모리 refresh2회, 예상 외 요청/모델/웹훅0. 기존 GET connections 데이터 호환, 운영 설정·원장·완료 이력·Chat 커서·인증 파일 해시와 정기 작업 XML 불변, 임시 서버 종료·운영 포트 리스너0을 확인했다. 실제 계정 재승인·토큰 파일 교체·업무 본문 조회·운영 설치 시험은 아니다.
 
 기능은 기본 비활성이다. 운영 설치·검토 승인 후 기존 serve의 --enable-account-verification opt-in이 필요하다. 이번 개발에서 운영 코드 덮어쓰기·지속 실행·자동 시작·Windows 작업 변경·실제 재인증·토큰 파일 교체·병합은 하지 않는다.
 
