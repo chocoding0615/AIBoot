@@ -62,6 +62,8 @@ sources는 1~2개, 정확한 소문자 문자열만 허용한다. 쿼리·다른
 | unavailable | 네트워크·429·5xx·시간 초과 | null / unknown | retry_verify / NETWORK_ERROR 또는 TIMEOUT |
 | error | 일반401·원인 불명403·API 비활성·원본/gid 불일치·파손·검증 실패 | null / unknown | contact_admin / CHECK_FAILED |
 
+checkedAt은 RFC3339 문자열 또는 null이다. 전체 예산 부족 등으로 해당 서비스의 설정/접근 검사를 시작하지 못했으면 null이며 임의 시각을 만들지 않는다.
+
 configured는 접근 성공이 아니다. checkedAt은 해당 설정/접근 검사를 수행한 서버 시각이며 원본 갱신·동기화 시각이 아니다. 충분한 scope는 **이번 최소 읽기 권한**만 뜻하며 승인된 전체 자료·쓰기 권한이나 OAuth scope 목록을 인증하지 않는다. accountLabel은 항상 null이다.
 
 Sheets 일부 파일 또는 Chat 한 공간만 성공하면 해당 서비스는 connected가 아니다. 서비스마다 성공한 전체 최소 검사만 verifiedAccess=true다. 다른 서비스의 확인된 결과는 보존한다. 모든 서비스가 not_configured/error/unavailable여도 분류 결과가 존재하면200 partial이며 UI는 각 state를 표시한다. timeout 시 진행 전송을 취소하고 끝나지 않은 서비스는 unavailable/TIMEOUT으로 남긴다. 부분 성공을 숨기거나 자동 재시도하지 않는다.
