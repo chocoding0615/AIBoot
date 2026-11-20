@@ -52,6 +52,11 @@ export function createOfficialReader(api, config) {
   }
   return {
     [GUARDED]: true,
+    verifyMetadata: async () => {
+      for (const [role, definition] of Object.entries(ROLES)) {
+        await check(config[definition[0]], ["'" + definition[2] + "'!" + [...ALLOWED[role]][0]]);
+      }
+    },
     get: async args => {
       if (!args.ranges) return metadata(args.spreadsheetId);
       await check(args.spreadsheetId, args.ranges);

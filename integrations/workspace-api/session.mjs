@@ -45,8 +45,9 @@ export function createSessionBackend({controlUrl,controlToken,pairingCode,pairin
    if(url.pathname==='/api/session'&&req.method==='DELETE'){sessions.delete(id);return send(200,{data:{authenticated:false}},{'Set-Cookie':'aiboot_session=; HttpOnly; SameSite=Strict; Path=/api; Max-Age=0'});}
    const read=['/api/health','/api/reports','/api/tasks','/api/connections'].includes(url.pathname);
    const schedules=/^\/api\/report-schedules(?:\/(?:validate|[a-f0-9-]+(?:\/(?:pause|resume))?))?$/.test(url.pathname);
-   if(!read&&!schedules)fail('NOT_FOUND',404);
-   if(read&&req.method!=='GET'||!['GET','POST','PATCH','DELETE'].includes(req.method))fail('METHOD_NOT_ALLOWED',405);
+   const verify=url.pathname==='/api/connections/verify';
+   if(!read&&!schedules&&!verify)fail('NOT_FOUND',404);
+   if(verify&&req.method!=='POST'||read&&req.method!=='GET'||!['GET','POST','PATCH','DELETE'].includes(req.method))fail('METHOD_NOT_ALLOWED',405);
    if(req.method!=='GET'&&req.headers.origin!==uiOrigin)fail('CSRF_BLOCKED',403);
    const b=req.method==='GET'?undefined:JSON.stringify(await body(req)),abort=new AbortController(),timer=setTimeout(()=>abort.abort(),17000);
    const cancel=()=>{if(!res.writableEnded)abort.abort();};res.on('close',cancel);

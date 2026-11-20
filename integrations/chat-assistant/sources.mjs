@@ -28,19 +28,23 @@ export function fixedRules(repo) {
   } } });
   return vm.runInContext(src.slice(start, end) + '\n({fixedFacts, bucketOf, welfareTab, daysBetween})', context, { timeout: 1000 });
 }
-export function clients(report, home) {
+export function credentialPaths(report, home, service) {
+  const keys = path.join(report.googleAuthDir, 'dist/gcp-oauth.keys.json');
+  return service === 'chat' ? [path.join(home, 'chat-token.json'), report.chatOAuthKeys ? path.resolve(home, report.chatOAuthKeys) : keys] : [path.join(report.googleAuthDir, 'dist/.gsheets-server-credentials.json'), keys];
+}
+export function clients(report, home, { services = ['sheets', 'chat'], onAuth = () => {} } = {}) {
   const require = createRequire(path.join(report.googleAuthDir, 'package.json'));
   const { google } = require('googleapis');
   function auth(tokenFile, keyFile) {
     const keys = JSON.parse(fs.readFileSync(keyFile, 'utf8')), k = keys.installed || keys.web;
     const client = new google.auth.OAuth2(k.client_id, k.client_secret, (k.redirect_uris || [])[0]);
     client.setCredentials(JSON.parse(fs.readFileSync(tokenFile, 'utf8')));
+    onAuth(client);
     return client;
   }
-  const defaultKeys = path.join(report.googleAuthDir, 'dist/gcp-oauth.keys.json');
   return {
-    chat: google.chat({ version: 'v1', auth: auth(path.join(home, 'chat-token.json'), report.chatOAuthKeys ? path.resolve(home, report.chatOAuthKeys) : defaultKeys) }),
-    sheets: () => google.sheets({ version: 'v4', auth: auth(path.join(report.googleAuthDir, 'dist/.gsheets-server-credentials.json'), defaultKeys) }).spreadsheets
+    chat: services.includes('chat') ? google.chat({ version: 'v1', auth: auth(...credentialPaths(report, home, 'chat')) }) : undefined,
+    sheets: () => google.sheets({ version: 'v4', auth: auth(...credentialPaths(report, home, 'sheets')) }).spreadsheets
   };
 }
 
