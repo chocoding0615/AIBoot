@@ -29,10 +29,10 @@ async function main(){
  const todoService=new WorkspaceTodoService();
  const driveService=new WorkspaceDriveService();
  const control=createApi({service,reader,verifier,chatService,actionService,spaceService,todoService,auditService,driveService,token:access.token,port:controlPort});await control.listen();
- const code=crypto.randomBytes(32).toString('hex'),expires=Date.now()+10*60000,bootstrap=path.join(dir,'pairing.json');
+ const code=crypto.randomBytes(32).toString('hex'),expires=Date.now()+30*86400*1000,bootstrap=path.join(dir,'pairing.json');
  fs.writeFileSync(bootstrap,JSON.stringify({code,expiresAt:new Date(expires).toISOString()}),{mode:0o600});
  if(!verifyPrivate(bootstrap)){await control.close();fail('ACCESS_ACL_UNVERIFIED',403);}
- const browser=createSessionBackend({controlUrl:'http://127.0.0.1:'+controlPort,controlToken:access.token,pairingCode:code,pairingExpiresAt:expires,uiOrigin,port:uiPort});
+ const browser=createSessionBackend({controlUrl:'http://127.0.0.1:'+controlPort,controlToken:access.token,pairingCode:code,pairingExpiresAt:expires,uiOrigin,port:uiPort,reusable:true});
  try{await browser.listen();}catch(e){await control.close();throw e;}
  console.log(JSON.stringify({controlHost:'127.0.0.1',controlPort,uiBackendPort:uiPort,uiOrigin,writesEnabled:false,dispatchEnabled:false,pairingFileCreated:true,accountVerificationEnabled:verifier.enabled}));
  const close=async()=>{await browser.close();await control.close();try{fs.unlinkSync(bootstrap);}catch{}};

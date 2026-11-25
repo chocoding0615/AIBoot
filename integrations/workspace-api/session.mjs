@@ -7,10 +7,10 @@ export async function body(req){
  let raw='';for await(const c of req){raw+=c.toString('utf8');if(Buffer.byteLength(raw)>32768)fail('BODY_TOO_LARGE',413);}
  try{const b=JSON.parse(raw);if(!b||typeof b!=='object'||Array.isArray(b))throw Error();return b;}catch{fail('INVALID_JSON',400);}
 }
-export function createSessionBackend({controlUrl,controlToken,pairingCode,pairingExpiresAt,uiOrigin,port=0,clock=Date.now,fetcher=fetch}){
+export function createSessionBackend({controlUrl,controlToken,pairingCode,pairingExpiresAt,uiOrigin,port=0,clock=Date.now,fetcher=fetch,reusable=false}){
  const origin=new URL(uiOrigin),control=new URL(controlUrl);
  if(origin.hostname!=='127.0.0.1'||origin.protocol!=='http:'||origin.origin!==uiOrigin||control.hostname!=='127.0.0.1'||control.protocol!=='http:'||control.pathname!=='/'||control.search||control.hash||control.username||control.password||!/^[a-f0-9]{64}$/.test(controlToken)||!/^[a-f0-9]{64}$/.test(pairingCode))fail('LOCAL_SETUP_REQUIRED',503);
- let remaining=5,consumed=false;const sessions=new Map();
+ let remaining=reusable?999999:5,consumed=false;const sessions=new Map();
  const server=http.createServer(async(req,res)=>{
   const headers={'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Vary':'Origin'};
   if(req.headers.origin===uiOrigin)Object.assign(headers,{'Access-Control-Allow-Origin':uiOrigin,'Access-Control-Allow-Credentials':'true'});
@@ -27,10 +27,10 @@ export function createSessionBackend({controlUrl,controlToken,pairingCode,pairin
     if(url.search)fail('INVALID_REQUEST',400);
     if(req.method==='POST'){
      if(req.headers.origin!==uiOrigin)fail('CSRF_BLOCKED',403);
-     if(consumed||remaining<=0||clock()>=pairingExpiresAt)fail('PAIRING_EXPIRED',403);
+     if((!reusable&&consumed)||remaining<=0||clock()>=pairingExpiresAt)fail('PAIRING_EXPIRED',403);
      const b=await body(req);remaining--;
      if(Object.keys(b).length!==1||!equal(b.code,pairingCode))fail('AUTH_REQUIRED',401);
-     consumed=true;sessions.clear();const id=crypto.randomBytes(32).toString('hex'),csrf=crypto.randomBytes(32).toString('hex');
+     if(!reusable)consumed=true;sessions.clear();const id=crypto.randomBytes(32).toString('hex'),csrf=crypto.randomBytes(32).toString('hex');
      sessions.set(id,{csrf,expires:clock()+8*3600000,last:clock()});
      return send(200,{data:{authenticated:true,csrfToken:csrf,expiresAt:new Date(clock()+8*3600000).toISOString()}},{'Set-Cookie':'aiboot_session='+id+'; HttpOnly; SameSite=Strict; Path=/api; Max-Age=28800'});
     }
