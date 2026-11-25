@@ -67,7 +67,7 @@ export class WorkspaceChatService {
       .join('\n\n');
   }
 
-  submit({ text, agentId = null, clientMessageId = null }) {
+  submit({ text, agentId = null, clientMessageId = null, contextHistory = [] }) {
     if (typeof text !== 'string' || !text.trim()) fail('INVALID_REQUEST', 400);
     if (text.length > 4000) fail('INVALID_REQUEST', 400);
     if (agentId !== null && !AGENTS.some(a => a.id === agentId)) fail('INVALID_REQUEST', 400);
@@ -79,13 +79,29 @@ export class WorkspaceChatService {
 
     const now = this.clock();
     const jobId = crypto.randomUUID();
-    const target = resolveTargets(text, agentId);
+
+    // 3턴 컨텍스트: 최근 3회 대화쌍(최대 6개 메시지)을 선행사 해소 및 프롬프트에 활용
+    const history = Array.isArray(contextHistory)
+      ? contextHistory.slice(-6).filter(m => m && typeof m.text === 'string').map(m => ({
+          role: m.role === 'assistant' ? 'assistant' : 'user',
+          text: String(m.text).slice(0, 500),
+          at: typeof m.at === 'string' ? m.at : now.toISOString(),
+        }))
+      : [];
+
+    const previousUserText = [...history].reverse().find(x => x.role === 'user')?.text || '';
+    const combinedText = /그거|그건|그것|이건|그러면|관련해서|^왜|^언제|^어떻게/.test(text) && previousUserText
+      ? previousUserText + ' ' + text
+      : text;
+
+    const target = resolveTargets(combinedText, agentId);
 
     const abortController = new AbortController();
     const job = {
       jobId,
       clientMessageId: clientMessageId || null,
       text: text.trim(),
+      contextHistory: history,
       requestedAgentId: agentId || null,
       targetAgentIds: target.ids,
       targetBy: target.by,
@@ -134,6 +150,7 @@ export class WorkspaceChatService {
       requestedAt: job.requestedAt,
       completedAt: job.completedAt,
       items: job.items,
+      contextHistory: job.contextHistory,
       error: job.error,
     };
   }
@@ -263,9 +280,9 @@ export class WorkspaceChatService {
         if (blocked()) throw aiFailure('AI_REPORT_PROTECTION');
         if (job.abortController.signal.aborted) throw new Error(job.abortController.signal.reason);
 
-        // 프롬프트 생성: AIAssistant의 prompt 함수 활용
-        const stateMock = { messages: [], context: [] };
-        const promptText = prompt(job.text, snapshot, stateMock, this.policy());
+        // 프롬프트 생성: AIAssistant의 prompt 함수 활용 (3턴 컨텍스트 전달)
+        const stateContext = { messages: job.contextHistory || [], context: [] };
+        const promptText = prompt(job.text, snapshot, stateContext, this.policy());
 
         // AI 호출 (Antigravity 실행기)
         const rawOutput = await this.generate(promptText, blocked);

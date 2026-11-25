@@ -411,3 +411,34 @@ test('세션 백엔드 및 제어 API 엔드포인트 통합 검증', async t =>
   });
   assert.equal(cancelRes.status, 200);
 });
+
+test('WorkspaceChatService - 3-turn sliding window contextHistory handling', async () => {
+  const service = new WorkspaceChatService({ reader: { check: () => {} } });
+
+  // Test with >3 turns (8 messages) of context history, verifying it retains only last 3 turns (6 messages)
+  const inputHistory = [
+    { role: 'user', text: 'Turn 1 user' },
+    { role: 'assistant', text: 'Turn 1 assistant' },
+    { role: 'user', text: 'Turn 2 user' },
+    { role: 'assistant', text: 'Turn 2 assistant' },
+    { role: 'user', text: 'Turn 3 user' },
+    { role: 'assistant', text: 'Turn 3 assistant' },
+    { role: 'user', text: 'Turn 4 user' },
+    { role: 'assistant', text: 'Turn 4 assistant' },
+  ];
+
+  const { jobId } = service.submit({
+    text: '이건 어때?',
+    agentId: 'fixed',
+    contextHistory: inputHistory,
+  });
+
+  const job = service.get(jobId);
+  assert.ok(job);
+  assert.equal(job.contextHistory.length, 6);
+  assert.equal(job.contextHistory[0].text, 'Turn 2 user');
+  assert.equal(job.contextHistory[1].text, 'Turn 2 assistant');
+  assert.equal(job.contextHistory[4].text, 'Turn 4 user');
+  assert.equal(job.contextHistory[5].text, 'Turn 4 assistant');
+});
+
