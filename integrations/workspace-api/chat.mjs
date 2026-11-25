@@ -47,6 +47,62 @@ export function sourcesForAgents(agentIds) {
   return [...set];
 }
 
+export function extractRecommendations(agentId, snapshot, now) {
+  const recommendations = [];
+  const todayStr = kst(now).slice(0, 10);
+
+  if (agentId === 'fixed') {
+    const facts = snapshot?.facts || [];
+    const upcomingFact = facts.find(f => /납부|청구|요금/i.test(f.text || ''));
+    if (upcomingFact) {
+      recommendations.push({
+        id: 'rec-action-review',
+        type: 'action',
+        title: '청구서 파일 검토 및 시트 반영',
+        reason: '납부 예정 고정비 확인됨',
+        action: 'open_review',
+        payload: { taskRef: 'fixed:electric', occurrenceKey: '2026-11' },
+      });
+    }
+    recommendations.push({
+      id: 'rec-todo-fixed',
+      type: 'todo',
+      title: '11월 고정비 지출결의 확인',
+      reason: '월간 마감 기한 도래',
+      action: 'add_todo',
+      payload: { title: '11월 고정비 지출결의 확인', dueDate: todayStr },
+    });
+  } else if (agentId === 'contracts') {
+    recommendations.push({
+      id: 'rec-todo-contract',
+      type: 'todo',
+      title: '소프트웨어 라이선스 갱신 일정 확인',
+      reason: '정기 갱신 주기 도래',
+      action: 'add_todo',
+      payload: { title: '소프트웨어 라이선스 갱신 확인', dueDate: todayStr },
+    });
+  } else if (agentId === 'welfare') {
+    recommendations.push({
+      id: 'rec-todo-welfare',
+      type: 'todo',
+      title: '11월 복지포인트 미사용액 정산',
+      reason: '월말 정산 예정',
+      action: 'add_todo',
+      payload: { title: '11월 복지포인트 정산', dueDate: todayStr },
+    });
+  } else {
+    recommendations.push({
+      id: 'rec-action-today',
+      type: 'todo',
+      title: '오늘의 중요 업무보고 확인',
+      reason: '일일 업무 루틴',
+      action: 'add_todo',
+      payload: { title: '09:30 정기 보고 확인', dueDate: todayStr },
+    });
+  }
+  return recommendations;
+}
+
 export class WorkspaceChatService {
   constructor({
     reader,
@@ -233,6 +289,10 @@ export class WorkspaceChatService {
             facts: [],
             sources: [],
             advice: '',
+            recommendations: [
+              { id: 'rec-gen-fixed', type: 'suggest', title: '@고정비 11월 납부 예정 고정비 확인', action: 'send_prompt', payload: { text: '@고정비 11월 납부 예정 업무 보여줘' } },
+              { id: 'rec-gen-welfare', type: 'suggest', title: '@복지 포인트 정산 확인', action: 'send_prompt', payload: { text: '@복지 11월 복지포인트 현황 알려줘' } },
+            ],
           }];
           job.status = 'completed';
           job.completedAt = this.clock().toISOString();
@@ -254,6 +314,7 @@ export class WorkspaceChatService {
           facts: [],
           sources: [],
           advice: '',
+          recommendations: [],
         });
       }
 
@@ -291,6 +352,7 @@ export class WorkspaceChatService {
 
         // 출력 검증 및 답변 렌더링
         const answerText = renderAnswer(rawOutput, snapshot);
+        const recommendations = extractRecommendations(agent.id, snapshot, now);
 
         items.push({
           id: agent.id,
@@ -299,6 +361,7 @@ export class WorkspaceChatService {
           facts: snapshot.facts || [],
           sources: allowedSources,
           advice: '',
+          recommendations,
         });
       }
 
