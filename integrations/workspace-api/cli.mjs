@@ -5,6 +5,7 @@ import {WorkspaceActionService} from './actions.mjs';
 import {WorkspaceSpaceService} from './spaces.mjs';
 import {WorkspaceTodoService} from './todos.mjs';
 import {WorkspaceAuditService} from './audit.mjs';
+import {WorkspaceDriveService} from './drive.mjs';
 import fs from 'node:fs';import path from 'node:path';import os from 'node:os';import crypto from 'node:crypto';import {execFileSync} from 'node:child_process';
 import {WorkspaceReader} from './reader.mjs';import {createSessionBackend} from './session.mjs';import {verifyPrivate,initializeAccess} from './access.mjs';
 import {createApi} from '../report-scheduler/api.mjs';import {ScheduleService} from '../report-scheduler/service.mjs';import {openStore} from '../report-scheduler/store.mjs';import {WindowsBackend} from '../report-scheduler/windows.mjs';import {fail} from '../report-scheduler/core.mjs';
@@ -26,7 +27,8 @@ async function main(){
  const actionService=new WorkspaceActionService({reader,auditService});
  const spaceService=new WorkspaceSpaceService({reader});
  const todoService=new WorkspaceTodoService();
- const control=createApi({service,reader,verifier,chatService,actionService,spaceService,todoService,auditService,token:access.token,port:controlPort});await control.listen();
+ const driveService=new WorkspaceDriveService();
+ const control=createApi({service,reader,verifier,chatService,actionService,spaceService,todoService,auditService,driveService,token:access.token,port:controlPort});await control.listen();
  const code=crypto.randomBytes(32).toString('hex'),expires=Date.now()+10*60000,bootstrap=path.join(dir,'pairing.json');
  fs.writeFileSync(bootstrap,JSON.stringify({code,expiresAt:new Date(expires).toISOString()}),{mode:0o600});
  if(!verifyPrivate(bootstrap)){await control.close();fail('ACCESS_ACL_UNVERIFIED',403);}

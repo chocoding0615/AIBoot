@@ -51,8 +51,9 @@ export function createSessionBackend({controlUrl,controlToken,pairingCode,pairin
    const spaces=/^\/api\/spaces(?:\/[a-zA-Z0-9_-]+(?:\/verify)?)?$/.test(url.pathname);
    const todos=/^\/api\/todos(?:\/[a-zA-Z0-9_-]+)?$/.test(url.pathname);
    const audit=url.pathname==='/api/audit';
-   if(!read&&!schedules&&!verify&&!chat&&!actions&&!spaces&&!todos&&!audit)fail('NOT_FOUND',404);
-   if(verify&&req.method!=='POST'||read&&req.method!=='GET'||audit&&req.method!=='GET'||!['GET','POST','PATCH','DELETE'].includes(req.method))fail('METHOD_NOT_ALLOWED',405);
+   const drive=/^\/api\/drive\/(?:search|resolve)$/.test(url.pathname);
+   if(!read&&!schedules&&!verify&&!chat&&!actions&&!spaces&&!todos&&!audit&&!drive)fail('NOT_FOUND',404);
+   if(verify&&req.method!=='POST'||read&&req.method!=='GET'||audit&&req.method!=='GET'||drive&&req.method!=='GET'||!['GET','POST','PATCH','DELETE'].includes(req.method))fail('METHOD_NOT_ALLOWED',405);
    if(actions&&req.method!=='POST')fail('METHOD_NOT_ALLOWED',405);
    if(spaces){
     const isVerify=/^\/api\/spaces\/[a-zA-Z0-9_-]+\/verify$/.test(url.pathname);
