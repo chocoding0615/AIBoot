@@ -63,6 +63,14 @@ export function extractRecommendations(agentId, snapshot, now) {
         action: 'open_review',
         payload: { taskRef: 'fixed:electric', occurrenceKey: '2026-11' },
       });
+      recommendations.push({
+        id: 'rec-drive-fixed',
+        type: 'drive',
+        title: '청구서 원본 드라이브 열기',
+        reason: '한국전력 고지서 원본 PDF',
+        action: 'open_link',
+        payload: { url: 'https://drive.google.com/file/d/1kepco202611electric/view', name: '2026-11_한국전력_전기요금_청구서.pdf' },
+      });
     }
     recommendations.push({
       id: 'rec-todo-fixed',
@@ -74,6 +82,14 @@ export function extractRecommendations(agentId, snapshot, now) {
     });
   } else if (agentId === 'contracts') {
     recommendations.push({
+      id: 'rec-drive-contract',
+      type: 'drive',
+      title: '계약서 원본 드라이브 열기',
+      reason: '본사사옥 임대차계약서 원본',
+      action: 'open_link',
+      payload: { url: 'https://drive.google.com/file/d/1leasecontracthq/view', name: '본사사옥_임대차계약서_2026.pdf' },
+    });
+    recommendations.push({
       id: 'rec-todo-contract',
       type: 'todo',
       title: '소프트웨어 라이선스 갱신 일정 확인',
@@ -82,6 +98,14 @@ export function extractRecommendations(agentId, snapshot, now) {
       payload: { title: '소프트웨어 라이선스 갱신 확인', dueDate: todayStr },
     });
   } else if (agentId === 'welfare') {
+    recommendations.push({
+      id: 'rec-drive-welfare',
+      type: 'drive',
+      title: '복지 정산서 드라이브 열기',
+      reason: '복지포인트 지급/사용현황 시트',
+      action: 'open_link',
+      payload: { url: 'https://drive.google.com/file/d/1welfare2026points/view', name: '2026_복지포인트_지급_및_사용현황.xlsx' },
+    });
     recommendations.push({
       id: 'rec-todo-welfare',
       type: 'todo',
