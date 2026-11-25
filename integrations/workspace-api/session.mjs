@@ -46,8 +46,15 @@ export function createSessionBackend({controlUrl,controlToken,pairingCode,pairin
    const read=['/api/health','/api/reports','/api/tasks','/api/connections'].includes(url.pathname);
    const schedules=/^\/api\/report-schedules(?:\/(?:validate|[a-f0-9-]+(?:\/(?:pause|resume))?))?$/.test(url.pathname);
    const verify=url.pathname==='/api/connections/verify';
-   if(!read&&!schedules&&!verify)fail('NOT_FOUND',404);
+   const chat=/^\/api\/chat\/messages(?:\/[a-f0-9-]+(?:\/cancel)?)?$/.test(url.pathname);
+   if(!read&&!schedules&&!verify&&!chat)fail('NOT_FOUND',404);
    if(verify&&req.method!=='POST'||read&&req.method!=='GET'||!['GET','POST','PATCH','DELETE'].includes(req.method))fail('METHOD_NOT_ALLOWED',405);
+   if(chat){
+    const isCancel=/^\/api\/chat\/messages\/[a-f0-9-]+\/cancel$/.test(url.pathname);
+    const isSubmit=url.pathname==='/api/chat/messages';
+    const isGet=/^\/api\/chat\/messages\/[a-f0-9-]+$/.test(url.pathname);
+    if((isSubmit||isCancel)&&req.method!=='POST'||isGet&&req.method!=='GET')fail('METHOD_NOT_ALLOWED',405);
+   }
    if(req.method!=='GET'&&req.headers.origin!==uiOrigin)fail('CSRF_BLOCKED',403);
    const b=req.method==='GET'?undefined:JSON.stringify(await body(req)),abort=new AbortController(),timer=setTimeout(()=>abort.abort(),17000);
    const cancel=()=>{if(!res.writableEnded)abort.abort();};res.on('close',cancel);
