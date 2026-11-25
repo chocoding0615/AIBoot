@@ -97,7 +97,23 @@ export function extractRecommendations(agentId, snapshot, now) {
       action: 'add_todo',
       payload: { title: '소프트웨어 라이선스 갱신 확인', dueDate: todayStr },
     });
+    recommendations.push({
+      id: 'rec-todo-vehicle-cancel',
+      type: 'todo',
+      title: '정기차량 해지 건 계약 및 반납 절차 확인',
+      reason: '11/25 당일 정기차량 해지 일정',
+      action: 'add_todo',
+      payload: { title: '정기차량 해지 및 반납 정산 점검', dueDate: todayStr },
+    });
   } else if (agentId === 'welfare') {
+    recommendations.push({
+      id: 'rec-todo-birthday',
+      type: 'todo',
+      title: '오순영 님 생일 축하 및 기념 복지 챙김',
+      reason: '11/25 당일 임직원 생일',
+      action: 'add_todo',
+      payload: { title: '오순영 님 생일 기념 복지 챙김', dueDate: todayStr },
+    });
     recommendations.push({
       id: 'rec-drive-welfare',
       type: 'drive',
@@ -297,12 +313,17 @@ export class WorkspaceChatService {
         // 총괄 비서(업무 조율형):
         // 질문 텍스트에서 어느 업무에 해당하는지 판정
         const text = job.text;
+        const isOverallWorkQuery = /현재\s*해야\s*할|해야\s*할\s*업무|오늘\s*(해야\s*할|할\s*일|업무|일정|뭐\s*해야)|업무\s*보고|할\s*일\s*(알려|보여|요약)/i.test(text);
         const routes = [
           ['fixed', /고정비|지출|납부|청구|결의|전기료|전기요금|수도|가스|업체/],
           ['contracts', /계약|만료|갱신|보험|차량|라이[선센]스|구독|프로그램/],
-          ['welfare', /복지|포인트/],
+          ['welfare', /복지|포인트|생일/],
         ];
-        const matched = routes.filter(([, pat]) => pat.test(text)).map(([id]) => id);
+        let matched = routes.filter(([, pat]) => pat.test(text)).map(([id]) => id);
+
+        if (isOverallWorkQuery) {
+          matched = ['fixed', 'contracts', 'welfare'];
+        }
 
         if (!matched.length) {
           // 어떤 담당 업무인지 알 수 없거나 일반 인사/모호한 질문: 직접 조회 없이 업무 안내 응답
@@ -325,7 +346,9 @@ export class WorkspaceChatService {
 
         // 특정 담당으로 분류됨: 해당 담당들에게 연결
         effectiveAgentIds = matched;
-        coordinatorNote = `[총괄 비서 조율] 질문을 분석하여 ${matched.map(id => AGENTS.find(a => a.id === id)?.name).join(', ')}에게 연결했습니다.`;
+        coordinatorNote = isOverallWorkQuery
+          ? '[총괄 비서 종합 보고] 오늘(11/25) 기준 전체 업무(고정비·계약·복지/기념일)를 취합하여 대화형 보고를 드립니다.'
+          : `[총괄 비서 조율] 질문을 분석하여 ${matched.map(id => AGENTS.find(a => a.id === id)?.name).join(', ')}에게 연결했습니다.`;
       }
 
       // 각 대상 에이전트별로 허용된 소스만 조회하고 AI 답변 생성
