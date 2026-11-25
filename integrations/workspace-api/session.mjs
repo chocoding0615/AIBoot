@@ -47,10 +47,16 @@ export function createSessionBackend({controlUrl,controlToken,pairingCode,pairin
    const schedules=/^\/api\/report-schedules(?:\/(?:validate|[a-f0-9-]+(?:\/(?:pause|resume))?))?$/.test(url.pathname);
    const verify=url.pathname==='/api/connections/verify';
    const chat=/^\/api\/chat\/messages(?:\/[a-f0-9-]+(?:\/cancel)?)?$/.test(url.pathname);
-   const actions=['/api/actions/prepare','/api/actions/confirm'].includes(url.pathname);
-   if(!read&&!schedules&&!verify&&!chat&&!actions)fail('NOT_FOUND',404);
+   const actions=['/api/actions/prepare','/api/actions/confirm','/api/actions/rollback'].includes(url.pathname);
+   const spaces=/^\/api\/spaces(?:\/[a-zA-Z0-9_-]+(?:\/verify)?)?$/.test(url.pathname);
+   const todos=/^\/api\/todos(?:\/[a-zA-Z0-9_-]+)?$/.test(url.pathname);
+   if(!read&&!schedules&&!verify&&!chat&&!actions&&!spaces&&!todos)fail('NOT_FOUND',404);
    if(verify&&req.method!=='POST'||read&&req.method!=='GET'||!['GET','POST','PATCH','DELETE'].includes(req.method))fail('METHOD_NOT_ALLOWED',405);
    if(actions&&req.method!=='POST')fail('METHOD_NOT_ALLOWED',405);
+   if(spaces){
+    const isVerify=/^\/api\/spaces\/[a-zA-Z0-9_-]+\/verify$/.test(url.pathname);
+    if(isVerify&&req.method!=='POST')fail('METHOD_NOT_ALLOWED',405);
+   }
    if(chat){
     const isCancel=/^\/api\/chat\/messages\/[a-f0-9-]+\/cancel$/.test(url.pathname);
     const isSubmit=url.pathname==='/api/chat/messages';
@@ -58,7 +64,8 @@ export function createSessionBackend({controlUrl,controlToken,pairingCode,pairin
     if((isSubmit||isCancel)&&req.method!=='POST'||isGet&&req.method!=='GET')fail('METHOD_NOT_ALLOWED',405);
    }
    if(req.method!=='GET'&&req.headers.origin!==uiOrigin)fail('CSRF_BLOCKED',403);
-   const b=req.method==='GET'?undefined:JSON.stringify(await body(req)),abort=new AbortController(),timer=setTimeout(()=>abort.abort(),17000);
+   const hasBody=!['GET','HEAD'].includes(req.method)&&(req.headers['transfer-encoding']||Number(req.headers['content-length']||0)>0);
+   const b=hasBody?JSON.stringify(await body(req)):undefined,abort=new AbortController(),timer=setTimeout(()=>abort.abort(),17000);
    const cancel=()=>{if(!res.writableEnded)abort.abort();};res.on('close',cancel);
    try{
     const r=await fetcher(control.origin+url.pathname+url.search,{method:req.method,redirect:'error',signal:abort.signal,headers:{Authorization:'Bearer '+controlToken,...(b?{'Content-Type':'application/json'}:{}),...(req.headers['idempotency-key']?{'Idempotency-Key':req.headers['idempotency-key']}:{})},body:b});

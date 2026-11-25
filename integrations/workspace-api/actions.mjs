@@ -141,4 +141,48 @@ export class WorkspaceActionService {
     this.confirmedIdempotency.set(idempotencyKey, result);
     return result;
   }
+
+  async rollback(body, idempotencyKey) {
+    if (!body || typeof body !== 'object') fail('INVALID_REQUEST', 400);
+    const { actionId, confirmed } = body;
+
+    if (!actionId || !UUID_REGEX.test(actionId)) fail('INVALID_REQUEST', 400);
+    if (confirmed !== true) fail('CONFIRMATION_REQUIRED', 400);
+    if (!idempotencyKey || !VALID_IDEMPOTENCY_KEY.test(idempotencyKey)) fail('INVALID_IDEMPOTENCY_KEY', 400);
+
+    if (this.confirmedIdempotency.has(idempotencyKey)) {
+      return this.confirmedIdempotency.get(idempotencyKey);
+    }
+
+    if (this.reader && typeof this.reader.protected === 'function' && this.reader.protected()) {
+      fail('REPORT_PROTECTED', 409);
+    }
+
+    const prepared = this.preparedActions.get(actionId);
+    if (!prepared) fail('NOT_FOUND', 404);
+    if (prepared.status !== 'confirmed') fail('INVALID_STATE', 400);
+
+    const now = this.clock();
+
+    if (this.sheetUpdater && typeof this.sheetUpdater.updateSheet === 'function') {
+      await this.sheetUpdater.updateSheet(prepared.diff.targetSheet, prepared.diff.targetRange, prepared.diff.before);
+    }
+
+    prepared.status = 'reverted';
+    prepared.revertedAt = now.toISOString();
+
+    const result = {
+      actionId,
+      status: 'reverted',
+      verified: true,
+      targetSheet: prepared.diff.targetSheet,
+      targetRange: prepared.diff.targetRange,
+      revertedValues: { ...prepared.diff.before },
+      revertedAt: prepared.revertedAt,
+      verifiedReadAt: now.toISOString(),
+    };
+
+    this.confirmedIdempotency.set(idempotencyKey, result);
+    return result;
+  }
 }

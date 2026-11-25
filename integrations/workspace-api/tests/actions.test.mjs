@@ -107,6 +107,13 @@ test('WorkspaceActionService - confirm enforces validation, version, expiry and 
   assert.deepEqual(result1, result2);
   assert.equal(sheetUpdated, false);
 
+  // Rollback test
+  const rollbackKey = 'idem-key-rollback-1234567';
+  const rollbackResult = await service.rollback({ actionId: prepared.actionId, confirmed: true }, rollbackKey);
+  assert.equal(rollbackResult.status, 'reverted');
+  assert.equal(rollbackResult.verified, true);
+  assert.equal(rollbackResult.revertedValues.amount, 120500); // restored original before value
+
   // Expiry check
   const prep2 = service.prepare({ taskRef: 'fixed:gas', proposedChanges: { amount: 200 } });
   currentTime += 11 * 60000; // 11 mins later (TTL is 10 min)
