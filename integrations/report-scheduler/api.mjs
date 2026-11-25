@@ -1,7 +1,7 @@
 import {body as readJsonBody} from '../workspace-api/session.mjs';
 import http from 'node:http';import crypto from 'node:crypto';import {fail} from './core.mjs';import {validId} from './service.mjs';
 function equal(a,b){return typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&crypto.timingSafeEqual(Buffer.from(a),Buffer.from(b));}
-export function createApi({service,reader,verifier,token,port=0}){
+export function createApi({service,reader,verifier,chatService,token,port=0}){
  if(!/^[a-f0-9]{64}$/.test(token||''))fail('AUTH_NOT_CONFIGURED',503);
  const server=http.createServer(async(req,res)=>{
   const requestedAt=new Date();
@@ -22,6 +22,27 @@ export function createApi({service,reader,verifier,token,port=0}){
     if(!verifier)fail('VERIFICATION_DISABLED',503);
     const abort=new AbortController(),cancel=()=>{if(!res.writableEnded)abort.abort();};res.on('close',cancel);
     try{return send(200,await verifier.verify(await readJsonBody(req),{signal:abort.signal}));}finally{res.removeListener('close',cancel);}
+   }
+   if(url.pathname.startsWith('/api/chat/messages')){
+    if(url.search)fail('INVALID_REQUEST',400);
+    if(!chatService)fail('NOT_CONFIGURED',503);
+    if(url.pathname==='/api/chat/messages'){
+     if(req.method!=='POST')fail('METHOD_NOT_ALLOWED',405);
+     const b=await readJsonBody(req);
+     return send(202,{requestId:crypto.randomUUID(),apiVersion:'v1',status:'ok',data:chatService.submit(b)});
+    }
+    const cancelMatch=/^\/api\/chat\/messages\/([a-f0-9-]+)\/cancel$/.exec(url.pathname);
+    if(cancelMatch){
+     if(req.method!=='POST')fail('METHOD_NOT_ALLOWED',405);
+     return send(200,{requestId:crypto.randomUUID(),apiVersion:'v1',status:'ok',data:chatService.cancel(cancelMatch[1])});
+    }
+    const getMatch=/^\/api\/chat\/messages\/([a-f0-9-]+)$/.exec(url.pathname);
+    if(getMatch){
+     if(req.method!=='GET')fail('METHOD_NOT_ALLOWED',405);
+     const d=chatService.get(getMatch[1]);
+     return send(200,{requestId:crypto.randomUUID(),apiVersion:'v1',status:d.status==='failed'?'error':'ok',data:d});
+    }
+    fail('NOT_FOUND',404);
    }
    if(url.search)fail('INVALID_REQUEST',400);
    const prefix='/api/report-schedules',suffix=url.pathname.slice(prefix.length);
@@ -52,7 +73,7 @@ export function createApi({service,reader,verifier,token,port=0}){
    }
    if(!['create','update'].includes(operation)&&body.rule!==undefined)fail('INVALID_REQUEST',400);
    send(operation==='create'?201:200,{data:service.mutate(operation,input,{expectedVersion:body.expectedVersion,confirmed:body.confirmed,idempotencyKey:req.headers['idempotency-key']})});
-  }catch(e){if(req.url.split('?')[0]==='/api/connections/verify')return send(e.status||503,{requestId:crypto.randomUUID(),apiVersion:'v1',status:'error',error:{code:e.code||'CHECK_UNAVAILABLE'},meta:{requestedAt:requestedAt.toISOString(),completedAt:new Date().toISOString()}});const error={code:e.code||'INTERNAL_ERROR',...(e.details?{details:e.details}:{})};const read=reader&&['/api/health','/api/reports','/api/tasks','/api/connections'].includes(req.url.split('?')[0]);send(e.status||503,read?{requestId:crypto.randomUUID(),apiVersion:'v0',status:'error',error,meta:{requestedAt:requestedAt.toISOString(),completedAt:new Date().toISOString(),durationMs:Date.now()-requestedAt.getTime(),partial:false,sources:e.details?.sources||[]}}:{error});}
+  }catch(e){if(req.url.split('?')[0]==='/api/connections/verify'||req.url.split('?')[0].startsWith('/api/chat/messages'))return send(e.status||503,{requestId:crypto.randomUUID(),apiVersion:'v1',status:'error',error:{code:e.code||'INTERNAL_ERROR',message:e.message},meta:{requestedAt:requestedAt.toISOString(),completedAt:new Date().toISOString()}});const error={code:e.code||'INTERNAL_ERROR',...(e.details?{details:e.details}:{})};const read=reader&&['/api/health','/api/reports','/api/tasks','/api/connections'].includes(req.url.split('?')[0]);send(e.status||503,read?{requestId:crypto.randomUUID(),apiVersion:'v0',status:'error',error,meta:{requestedAt:requestedAt.toISOString(),completedAt:new Date().toISOString(),durationMs:Date.now()-requestedAt.getTime(),partial:false,sources:e.details?.sources||[]}}:{error});}
  });
  server.requestTimeout=5000;server.headersTimeout=5000;server.keepAliveTimeout=1000;
  return {server,listen:()=>new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',()=>resolve(server.address()));}),close:()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();})};
