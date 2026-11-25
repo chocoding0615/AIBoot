@@ -47,11 +47,12 @@ export function createSessionBackend({controlUrl,controlToken,pairingCode,pairin
    const schedules=/^\/api\/report-schedules(?:\/(?:validate|[a-f0-9-]+(?:\/(?:pause|resume))?))?$/.test(url.pathname);
    const verify=url.pathname==='/api/connections/verify';
    const chat=/^\/api\/chat\/messages(?:\/[a-f0-9-]+(?:\/cancel)?)?$/.test(url.pathname);
-   const actions=['/api/actions/prepare','/api/actions/confirm','/api/actions/rollback'].includes(url.pathname);
+   const actions=['/api/actions/prepare','/api/actions/confirm','/api/actions/rollback','/api/actions/batch-prepare','/api/actions/batch-confirm'].includes(url.pathname);
    const spaces=/^\/api\/spaces(?:\/[a-zA-Z0-9_-]+(?:\/verify)?)?$/.test(url.pathname);
    const todos=/^\/api\/todos(?:\/[a-zA-Z0-9_-]+)?$/.test(url.pathname);
-   if(!read&&!schedules&&!verify&&!chat&&!actions&&!spaces&&!todos)fail('NOT_FOUND',404);
-   if(verify&&req.method!=='POST'||read&&req.method!=='GET'||!['GET','POST','PATCH','DELETE'].includes(req.method))fail('METHOD_NOT_ALLOWED',405);
+   const audit=url.pathname==='/api/audit';
+   if(!read&&!schedules&&!verify&&!chat&&!actions&&!spaces&&!todos&&!audit)fail('NOT_FOUND',404);
+   if(verify&&req.method!=='POST'||read&&req.method!=='GET'||audit&&req.method!=='GET'||!['GET','POST','PATCH','DELETE'].includes(req.method))fail('METHOD_NOT_ALLOWED',405);
    if(actions&&req.method!=='POST')fail('METHOD_NOT_ALLOWED',405);
    if(spaces){
     const isVerify=/^\/api\/spaces\/[a-zA-Z0-9_-]+\/verify$/.test(url.pathname);

@@ -5,11 +5,12 @@ const VALID_IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,64}$/;
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class WorkspaceActionService {
-  constructor({ reader, clock = () => new Date(), actionTtlMs = 10 * 60000, sheetUpdater = null } = {}) {
+  constructor({ reader, clock = () => new Date(), actionTtlMs = 10 * 60000, sheetUpdater = null, auditService = null } = {}) {
     this.reader = reader;
     this.clock = clock;
     this.actionTtlMs = actionTtlMs;
     this.sheetUpdater = sheetUpdater;
+    this.auditService = auditService;
     this.preparedActions = new Map();
     this.confirmedIdempotency = new Map();
   }
@@ -76,6 +77,7 @@ export class WorkspaceActionService {
     };
 
     this.preparedActions.set(actionId, prepared);
+    this.auditService?.record({ action: 'prepare', targetSheet, targetRange, details: { taskRef, diff } });
 
     return {
       actionId,
@@ -139,6 +141,7 @@ export class WorkspaceActionService {
     };
 
     this.confirmedIdempotency.set(idempotencyKey, result);
+    this.auditService?.record({ action: 'confirm', targetSheet: result.targetSheet, targetRange: result.targetRange, details: { actionId, updatedValues } });
     return result;
   }
 
@@ -183,6 +186,43 @@ export class WorkspaceActionService {
     };
 
     this.confirmedIdempotency.set(idempotencyKey, result);
+    this.auditService?.record({ action: 'rollback', targetSheet: result.targetSheet, targetRange: result.targetRange, details: { actionId, revertedValues: result.revertedValues } });
     return result;
+  }
+
+  batchPrepare(body) {
+    if (!body || typeof body !== 'object' || !Array.isArray(body.items) || !body.items.length) {
+      fail('INVALID_REQUEST', 400);
+    }
+    const results = body.items.map(item => this.prepare(item));
+    this.auditService?.record({ action: 'batch_prepare', details: { count: results.length } });
+    return {
+      status: 'ok',
+      batchId: 'batch-' + crypto.randomUUID().slice(0, 8),
+      items: results,
+      totalCount: results.length,
+    };
+  }
+
+  async batchConfirm(body, idempotencyKey) {
+    if (!body || typeof body !== 'object' || !Array.isArray(body.actionIds) || !body.actionIds.length) {
+      fail('INVALID_REQUEST', 400);
+    }
+    if (!idempotencyKey || !VALID_IDEMPOTENCY_KEY.test(idempotencyKey)) {
+      fail('INVALID_IDEMPOTENCY_KEY', 400);
+    }
+    const results = [];
+    for (let i = 0; i < body.actionIds.length; i++) {
+      const actionId = body.actionIds[i];
+      const subKey = `${idempotencyKey}_${String(i).padStart(2, '0')}`;
+      const conf = await this.confirm({ actionId, confirmed: true }, subKey);
+      results.push(conf);
+    }
+    this.auditService?.record({ action: 'batch_confirm', details: { count: results.length, actionIds: body.actionIds } });
+    return {
+      status: 'ok',
+      results,
+      confirmedCount: results.length,
+    };
   }
 }

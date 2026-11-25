@@ -202,3 +202,25 @@ test('HTTP API & Session proxy for actions prepare and confirm', async () => {
     await control.close();
   }
 });
+
+test('WorkspaceActionService - batchPrepare and batchConfirm', async () => {
+  const service = new WorkspaceActionService();
+
+  const batchPrep = service.batchPrepare({
+    items: [
+      { taskRef: 'fixed:electric', proposedChanges: { amount: 1400000 } },
+      { taskRef: 'fixed:water', proposedChanges: { amount: 110000 } },
+    ],
+  });
+  assert.equal(batchPrep.status, 'ok');
+  assert.equal(batchPrep.totalCount, 2);
+  assert.equal(batchPrep.items.length, 2);
+  const actionIds = batchPrep.items.map(it => it.actionId);
+
+  const batchConf = await service.batchConfirm({ actionIds }, 'batch-idem-key-1234567890');
+  assert.equal(batchConf.status, 'ok');
+  assert.equal(batchConf.confirmedCount, 2);
+  assert.equal(batchConf.results[0].status, 'confirmed');
+  assert.equal(batchConf.results[1].status, 'confirmed');
+});
+
