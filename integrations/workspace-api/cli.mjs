@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import {ConnectionVerifier} from './accounts.mjs';
 import {WorkspaceChatService} from './chat.mjs';
+import {WorkspaceActionService} from './actions.mjs';
 import fs from 'node:fs';import path from 'node:path';import os from 'node:os';import crypto from 'node:crypto';import {execFileSync} from 'node:child_process';
 import {WorkspaceReader} from './reader.mjs';import {createSessionBackend} from './session.mjs';import {verifyPrivate,initializeAccess} from './access.mjs';
 import {createApi} from '../report-scheduler/api.mjs';import {ScheduleService} from '../report-scheduler/service.mjs';import {openStore} from '../report-scheduler/store.mjs';import {WindowsBackend} from '../report-scheduler/windows.mjs';import {fail} from '../report-scheduler/core.mjs';
@@ -18,7 +19,8 @@ async function main(){
  const reader=new WorkspaceReader({home,buildVersion}),service=new ScheduleService({store:openStore(home),windows:new WindowsBackend(),home,writesEnabled:false,dispatchEnabled:()=>false});
  const verifier=new ConnectionVerifier({reader,enabled:args.includes('--enable-account-verification')});
  const chatService=new WorkspaceChatService({reader,home});
- const control=createApi({service,reader,verifier,chatService,token:access.token,port:controlPort});await control.listen();
+ const actionService=new WorkspaceActionService({reader});
+ const control=createApi({service,reader,verifier,chatService,actionService,token:access.token,port:controlPort});await control.listen();
  const code=crypto.randomBytes(32).toString('hex'),expires=Date.now()+10*60000,bootstrap=path.join(dir,'pairing.json');
  fs.writeFileSync(bootstrap,JSON.stringify({code,expiresAt:new Date(expires).toISOString()}),{mode:0o600});
  if(!verifyPrivate(bootstrap)){await control.close();fail('ACCESS_ACL_UNVERIFIED',403);}

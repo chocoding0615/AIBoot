@@ -47,8 +47,10 @@ export function createSessionBackend({controlUrl,controlToken,pairingCode,pairin
    const schedules=/^\/api\/report-schedules(?:\/(?:validate|[a-f0-9-]+(?:\/(?:pause|resume))?))?$/.test(url.pathname);
    const verify=url.pathname==='/api/connections/verify';
    const chat=/^\/api\/chat\/messages(?:\/[a-f0-9-]+(?:\/cancel)?)?$/.test(url.pathname);
-   if(!read&&!schedules&&!verify&&!chat)fail('NOT_FOUND',404);
+   const actions=['/api/actions/prepare','/api/actions/confirm'].includes(url.pathname);
+   if(!read&&!schedules&&!verify&&!chat&&!actions)fail('NOT_FOUND',404);
    if(verify&&req.method!=='POST'||read&&req.method!=='GET'||!['GET','POST','PATCH','DELETE'].includes(req.method))fail('METHOD_NOT_ALLOWED',405);
+   if(actions&&req.method!=='POST')fail('METHOD_NOT_ALLOWED',405);
    if(chat){
     const isCancel=/^\/api\/chat\/messages\/[a-f0-9-]+\/cancel$/.test(url.pathname);
     const isSubmit=url.pathname==='/api/chat/messages';
